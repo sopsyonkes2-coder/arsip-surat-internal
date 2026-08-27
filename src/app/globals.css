@@ -3,7 +3,16 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  --primary: #2563eb;
 }
+
+html[data-theme="dark"] body { background: #0f172a; color: #e2e8f0; }
+html[data-theme="dark"] .bg-white { background-color: #1e293b; }
+html[data-theme="dark"] .bg-slate-50 { background-color: #0f172a; }
+html[data-theme="dark"] .text-slate-900 { color: #f8fafc; }
+html[data-theme="dark"] .text-slate-800 { color: #e2e8f0; }
+html[data-theme="dark"] .text-slate-700,
+html[data-theme="dark"] .text-slate-600 { color: #cbd5e1; }
 
 @theme inline {
   --color-background: var(--background);
