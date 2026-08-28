@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import {
   ArrowLeft,
   Camera,
@@ -85,23 +85,65 @@ export default function TambahMassalPage() {
   const duplicateRow = (row: Row) =>
     setRows((current) => [...current, { ...row, id: Date.now() }]);
 
-  const stopCameraStream = () => {
-    cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+  /** Lepas kamera sepenuhnya + jeda agar hardware free sebelum getUserMedia lagi */
+  const stopCameraStream = useCallback(async () => {
+    const stream = cameraStreamRef.current;
     cameraStreamRef.current = null;
-    if (cameraVideoRef.current) cameraVideoRef.current.srcObject = null;
-  };
 
-  useEffect(() => {
-    if (
-      cameraRowId !== null &&
-      cameraVideoRef.current &&
-      cameraStreamRef.current
-    ) {
-      cameraVideoRef.current.srcObject = cameraStreamRef.current;
-      void cameraVideoRef.current.play().catch(() => {});
+    const video = cameraVideoRef.current;
+    if (video) {
+      try {
+        video.pause();
+      } catch {
+        /* ignore */
+      }
+      video.srcObject = null;
+      try {
+        video.load();
+      } catch {
+        /* ignore */
+      }
     }
+
+    if (stream) {
+      for (const track of stream.getTracks()) {
+        try {
+          track.stop();
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    // penting: browser (terutama mobile) butuh waktu melepaskan kamera
+    await new Promise((r) => setTimeout(r, 200));
+  }, []);
+
+  // attach stream ke video setelah modal terbuka
+  useEffect(() => {
+    if (cameraRowId === null || !cameraStreamRef.current) return;
+
+    const video = cameraVideoRef.current;
+    if (!video) return;
+
+    video.srcObject = cameraStreamRef.current;
+
+    const play = () => {
+      void video.play().catch(() => {});
+    };
+
+    if (video.readyState >= 1) {
+      play();
+    } else {
+      video.onloadedmetadata = play;
+    }
+
+    return () => {
+      video.onloadedmetadata = null;
+    };
   }, [cameraRowId]);
 
+  // lock scroll saat kamera terbuka
   useEffect(() => {
     if (cameraRowId === null) return;
     const scrollY = window.scrollY;
@@ -129,15 +171,26 @@ export default function TambahMassalPage() {
     };
   }, [cameraRowId]);
 
-  useEffect(() => () => stopCameraStream(), []);
+  // cleanup saat unmount
+  useEffect(() => {
+    return () => {
+      void stopCameraStream();
+    };
+  }, [stopCameraStream]);
 
   const openRowCamera = async (rowId: number) => {
     setCameraError("");
     setResult("");
+    setCapturing(false);
+
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error("Kamera tidak tersedia di perangkat ini.");
       }
+
+      // SELALU lepas stream lama dulu (hindari black screen / device in use)
+      await stopCameraStream();
+
       let stream: MediaStream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
@@ -154,17 +207,33 @@ export default function TambahMassalPage() {
           audio: false,
         });
       }
+
+      if (!stream.getVideoTracks().length) {
+        stream.getTracks().forEach((t) => t.stop());
+        throw new Error("Tidak ada video track dari kamera.");
+      }
+
       cameraStreamRef.current = stream;
       setCameraRowId(rowId);
     } catch (err: unknown) {
-      setResult(
-        err instanceof Error ? err.message : "Kamera tidak dapat digunakan."
-      );
+      await stopCameraStream();
+      setCameraRowId(null);
+
+      const msg =
+        err instanceof Error
+          ? err.name === "NotAllowedError"
+            ? "Izin kamera ditolak. Izinkan akses kamera di browser."
+            : err.name === "NotReadableError" || err.name === "AbortError"
+              ? "Kamera sedang dipakai aplikasi lain atau belum dilepas. Tutup aplikasi lain lalu coba lagi."
+              : err.message
+          : "Kamera tidak dapat digunakan.";
+
+      setResult(msg);
     }
   };
 
   const closeRowCamera = () => {
-    stopCameraStream();
+    void stopCameraStream();
     setCameraRowId(null);
     setCapturing(false);
     setCameraError("");

@@ -49,21 +49,18 @@ const classifications = [
 ];
 
 type ScanFilter = "color" | "gray" | "bw";
-type Point = { x: number; y: number }; // normalized 0..1 terhadap lebar/tinggi gambar sumber
+type Point = { x: number; y: number };
 type ScannerPhase = "live" | "edit";
 
 type ScanPage = {
   id: string;
-  /** frame penuh resolusi kamera (jpeg) */
   sourceDataUrl: string;
-  /** 4 sudut dokumen di koordinat normalisasi sumber */
   corners: [Point, Point, Point, Point];
   rotation: 0 | 90 | 180 | 270;
   filter: ScanFilter;
-  brightness: number; // -50..50
-  contrast: number; // -50..50
+  brightness: number;
+  contrast: number;
   enhance: boolean;
-  /** hasil akhir siap PDF */
   previewDataUrl: string;
 };
 
@@ -108,28 +105,16 @@ function downscale(c: HTMLCanvasElement, max = MAX_SIDE): HTMLCanvasElement {
 }
 
 function orderCorners(pts: Point[]): [Point, Point, Point, Point] {
-  // TL, TR, BR, BL berdasarkan sum/diff
-  const sorted = [...pts].sort((a, b) => a.x + a.y - (b.x + b.y));
-  const tl = sorted[0];
-  const br = sorted[3];
-  const rest = [sorted[1], sorted[2]];
-  rest.sort((a, b) => a.y - b.y);
-  // yang lebih kecil x di atas = TR jika y mirip; gunakan x
-  const [a, b] = rest;
-  const tr = a.x > b.x ? a : b;
-  const bl = a.x > b.x ? b : a;
-  // refine: TR punya x besar + y kecil
   const bySum = [...pts].sort((p, q) => p.x + p.y - (q.x + q.y));
   const byDiff = [...pts].sort((p, q) => p.y - p.x - (q.y - q.x));
   return [
-    bySum[0], // TL min x+y
-    byDiff[0], // TR min y-x
-    bySum[3], // BR max x+y
-    byDiff[3], // BL max y-x
+    bySum[0],
+    byDiff[0],
+    bySum[3],
+    byDiff[3],
   ];
 }
 
-/** Deteksi 4 sudut dokumen dengan OpenCV — koordinat normalisasi 0..1 */
 function detectCornersOpenCv(
   cv: any,
   sourceCanvas: HTMLCanvasElement
@@ -196,7 +181,6 @@ function detectCornersOpenCv(
   }
 }
 
-/** Perspective warp OpenCV → canvas hasil */
 function warpPerspective(
   cv: any,
   sourceCanvas: HTMLCanvasElement,
@@ -360,7 +344,6 @@ async function renderScanPreview(
       warped = src;
     }
   } else {
-    // fallback bbox crop
     const xs = page.corners.map((p) => p.x);
     const ys = page.corners.map((p) => p.y);
     const x0 = Math.max(0, Math.min(...xs) * src.width);
@@ -458,7 +441,6 @@ export default function TambahArsipPage() {
     y: number;
   } | null>(null);
 
-  // edit state
   const [editSource, setEditSource] = useState<string>("");
   const [editCorners, setEditCorners] = useState<[Point, Point, Point, Point]>(
     defaultCorners()
@@ -506,17 +488,45 @@ export default function TambahArsipPage() {
     }
   }, []);
 
-  const stopStream = useCallback(() => {
+  /** Lepas kamera sepenuhnya + jeda agar hardware free sebelum getUserMedia lagi */
+  const stopStream = useCallback(async () => {
     stopLoop();
-    streamRef.current?.getTracks().forEach((t) => t.stop());
+    const stream = streamRef.current;
     streamRef.current = null;
     trackRef.current = null;
-    if (videoRef.current) videoRef.current.srcObject = null;
+
+    const video = videoRef.current;
+    if (video) {
+      try {
+        video.pause();
+      } catch {
+        /* ignore */
+      }
+      video.srcObject = null;
+      try {
+        video.load();
+      } catch {
+        /* ignore */
+      }
+    }
+
+    if (stream) {
+      for (const t of stream.getTracks()) {
+        try {
+          t.stop();
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    // penting: browser (terutama mobile) butuh waktu melepaskan kamera
+    await new Promise((r) => setTimeout(r, 200));
   }, [stopLoop]);
 
   useEffect(() => {
     return () => {
-      stopStream();
+      void stopStream();
       if (pdfPreview?.url) URL.revokeObjectURL(pdfPreview.url);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -558,7 +568,10 @@ export default function TambahArsipPage() {
         throw new Error("Kamera tidak tersedia.");
       }
       setError("");
-      // load OpenCV parallel
+
+      // SELALU lepas stream lama dulu
+      await stopStream();
+
       loadOpenCv()
         .then((cv) => {
           cvRef.current = cv;
@@ -567,6 +580,21 @@ export default function TambahArsipPage() {
         .catch(() => {
           setCvReady(false);
         });
+
+      // reset state
+      setTorchOn(false);
+      setTorchSupported(false);
+      setZoomSupported(false);
+      setExposureSupported(false);
+      setZoom(1);
+      setExposure(0);
+      setLiveCorners(null);
+      setDocStatus("searching");
+      stableCountRef.current = 0;
+      lastCornersRef.current = null;
+      setCountdown(null);
+      setFocusIndicator(null);
+      setPhase("live");
 
       let stream: MediaStream;
       try {
@@ -584,38 +612,60 @@ export default function TambahArsipPage() {
           audio: false,
         });
       }
+
       streamRef.current = stream;
       const track = stream.getVideoTracks()[0];
+      if (!track) {
+        stream.getTracks().forEach((t) => t.stop());
+        throw new Error("Tidak ada video track dari kamera.");
+      }
       trackRef.current = track;
       inspectCapabilities(track);
-      setPhase("live");
+
       setCameraOpen(true);
-      setLiveCorners(null);
-      setDocStatus("searching");
-      stableCountRef.current = 0;
     } catch (err: unknown) {
-      setError(
-        err instanceof Error ? err.message : "Kamera tidak dapat digunakan."
-      );
+      await stopStream();
+      setCameraOpen(false);
+      const msg =
+        err instanceof Error
+          ? err.name === "NotAllowedError"
+            ? "Izin kamera ditolak. Izinkan akses kamera di browser."
+            : err.name === "NotReadableError" || err.name === "AbortError"
+              ? "Kamera sedang dipakai aplikasi lain atau belum dilepas. Tutup aplikasi lain lalu coba lagi."
+              : err.message
+          : "Kamera tidak dapat digunakan.";
+      setError(msg);
     }
   };
 
   const closeCamera = () => {
-    stopStream();
+    void stopStream();
     setCameraOpen(false);
     setPhase("live");
     setCountdown(null);
     setTorchOn(false);
     setFocusIndicator(null);
+    setLiveCorners(null);
+    setDocStatus("searching");
+    stableCountRef.current = 0;
+    lastCornersRef.current = null;
   };
 
   // attach video + detection loop
   useEffect(() => {
     if (!cameraOpen || phase !== "live" || !streamRef.current) return;
+
     const video = videoRef.current;
     if (video) {
       video.srcObject = streamRef.current;
-      void video.play().catch(() => {});
+      const play = () => {
+        void video.play().catch(() => {});
+      };
+      if (video.readyState >= 1) {
+        play();
+      } else {
+        video.onloadedmetadata = play;
+      }
     }
 
     let lastTs = 0;
@@ -695,7 +745,6 @@ export default function TambahArsipPage() {
                 ctx.fill();
               });
 
-              // stability
               const prev = lastCornersRef.current;
               if (prev) {
                 let dist = 0;
@@ -726,7 +775,12 @@ export default function TambahArsipPage() {
     };
 
     loopRef.current = requestAnimationFrame(tick);
-    return () => stopLoop();
+    return () => {
+      stopLoop();
+      if (video) {
+        video.onloadedmetadata = null;
+      }
+    };
   }, [cameraOpen, phase, gridOn, stopLoop]);
 
   // auto capture countdown
@@ -801,7 +855,10 @@ export default function TambahArsipPage() {
     try {
       const track = trackRef.current;
       const caps = track?.getCapabilities?.() as any;
-      if (caps?.focusMode?.includes?.("manual") || caps?.focusMode?.includes?.("single-shot")) {
+      if (
+        caps?.focusMode?.includes?.("manual") ||
+        caps?.focusMode?.includes?.("single-shot")
+      ) {
         await track?.applyConstraints({
           advanced: [{ focusMode: "single-shot" } as any],
         });
@@ -851,7 +908,6 @@ export default function TambahArsipPage() {
     setPhase("edit");
     setCountdown(null);
 
-    // initial preview
     setEditBusy(true);
     try {
       const preview = await renderScanPreview(cvRef.current, {
@@ -902,7 +958,17 @@ export default function TambahArsipPage() {
       void refreshEditPreview();
     }, 120);
     return () => window.clearTimeout(t);
-  }, [phase, editSource, editCorners, editRotation, editFilter, editBrightness, editContrast, editEnhance, refreshEditPreview]);
+  }, [
+    phase,
+    editSource,
+    editCorners,
+    editRotation,
+    editFilter,
+    editBrightness,
+    editContrast,
+    editEnhance,
+    refreshEditPreview,
+  ]);
 
   const onCornerPointerDown = (idx: number) => (e: ReactPointerEvent) => {
     e.preventDefault();
@@ -960,11 +1026,7 @@ export default function TambahArsipPage() {
       setPhase("live");
       setEditSource("");
       setEditPreview("");
-      // restart loop via effect
-      if (streamRef.current && videoRef.current) {
-        videoRef.current.srcObject = streamRef.current;
-        void videoRef.current.play();
-      }
+      // video akan di-attach ulang oleh useEffect karena phase berubah
     } finally {
       setEditBusy(false);
     }
@@ -1178,7 +1240,6 @@ export default function TambahArsipPage() {
           </div>
         )}
 
-        {/* INFORMASI SURAT — tidak diubah */}
         <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-200 p-5">
             <div className="flex items-center gap-3">
@@ -1289,7 +1350,6 @@ export default function TambahArsipPage() {
           </div>
         </section>
 
-        {/* DOKUMEN */}
         <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-200 p-5">
             <div className="flex items-center gap-3">
@@ -1378,7 +1438,7 @@ export default function TambahArsipPage() {
             )}
             <button
               type="button"
-              onClick={openCamera}
+              onClick={() => void openCamera()}
               className="mt-4 inline-flex items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-700 hover:bg-blue-100"
             >
               <Camera size={17} /> Scan dengan Kamera
@@ -1470,7 +1530,6 @@ export default function TambahArsipPage() {
                   </div>
                 </div>
 
-                {/* controls */}
                 <div className="space-y-2 border-t border-slate-800 bg-slate-900 px-3 py-2">
                   <div className="flex flex-wrap items-center justify-center gap-2">
                     <button
@@ -1598,7 +1657,6 @@ export default function TambahArsipPage() {
             {phase === "edit" && (
               <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
                 <div className="grid gap-3 p-3 md:grid-cols-2">
-                  {/* corner editor */}
                   <div>
                     <p className="mb-1 text-xs text-slate-400">
                       Geser 4 sudut · Perspective correction
@@ -1622,10 +1680,7 @@ export default function TambahArsipPage() {
                       <svg className="pointer-events-none absolute inset-0 h-full w-full">
                         <polygon
                           points={editCorners
-                            .map(
-                              (p) =>
-                                `${p.x * 100}%,${p.y * 100}%`
-                            )
+                            .map((p) => `${p.x * 100}%,${p.y * 100}%`)
                             .join(" ")
                             .replace(/%/g, "")}
                           fill="rgba(34,197,94,0.15)"
@@ -1634,7 +1689,6 @@ export default function TambahArsipPage() {
                           vectorEffect="non-scaling-stroke"
                         />
                       </svg>
-                      {/* fix polygon: use absolute handles */}
                       {editCorners.map((p, i) => (
                         <button
                           key={i}
@@ -1649,7 +1703,6 @@ export default function TambahArsipPage() {
                       ))}
                     </div>
                   </div>
-                  {/* result preview */}
                   <div>
                     <p className="mb-1 text-xs text-slate-400">
                       Hasil scan {editBusy && "(memproses…)"}
@@ -1762,7 +1815,6 @@ export default function TambahArsipPage() {
         </div>
       )}
 
-      {/* PDF PREVIEW */}
       {pdfPreviewOpen && pdfPreview && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/90 p-2 sm:p-4">
           <div className="flex max-h-[96vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-slate-900 shadow-2xl">
