@@ -26,6 +26,26 @@ type ArchiveData = {
   linkFile: string;
 };
 
+type ClassificationKey = "B" | "SE" | "SP" | "ST" | "STR" | "R" | "Brafax" | "Lainnya";
+
+type ClassificationStyle = {
+  bar: string;
+  bg: string;
+  text: string;
+};
+
+type DateParts = {
+  year: number;
+  month: number; // 1-12
+  day: number;
+};
+
+const ALL_YEARS_LABEL = "Semua Tahun";
+const ALL_MONTHS_LABEL = "Semua Bulan";
+const ALL_CLASSIFICATIONS_LABEL = "Semua Klasifikasi";
+
+const JAKARTA_OFFSET_MS = 7 * 60 * 60 * 1000; // WIB = UTC+7
+
 const months = [
   "Januari",
   "Februari",
@@ -41,14 +61,7 @@ const months = [
   "Desember",
 ];
 
-const classificationColors: Record<
-  string,
-  {
-    bar: string;
-    bg: string;
-    text: string;
-  }
-> = {
+const classificationColors: Record<ClassificationKey, ClassificationStyle> = {
   B: {
     bar: "bg-blue-500",
     bg: "bg-blue-50",
@@ -74,6 +87,16 @@ const classificationColors: Record<
     bg: "bg-amber-50",
     text: "text-amber-700",
   },
+  R: {
+    bar: "bg-rose-500",
+    bg: "bg-rose-50",
+    text: "text-rose-700",
+  },
+  Brafax: {
+    bar: "bg-violet-500",
+    bg: "bg-violet-50",
+    text: "text-violet-700",
+  },
   Lainnya: {
     bar: "bg-slate-400",
     bg: "bg-slate-100",
@@ -81,56 +104,149 @@ const classificationColors: Record<
   },
 };
 
-function getMonthName(dateValue: string) {
-  if (!dateValue) return "";
+function getClassificationStyle(classification: string): ClassificationStyle {
+  return (
+    classificationColors[classification as ClassificationKey] ||
+    classificationColors.Lainnya
+  );
+}
 
-  const date = new Date(dateValue);
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
+}
 
-  if (Number.isNaN(date.getTime())) {
-    const parts = dateValue.split("-");
+function isValidDateParts(year: number, month: number, day: number): boolean {
+  return (
+    Number.isInteger(year) &&
+    Number.isInteger(month) &&
+    Number.isInteger(day) &&
+    year > 0 &&
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= 31
+  );
+}
 
-    if (parts.length >= 2) {
-      const monthNumber = Number(parts[1]);
+/**
+ * Satu-satunya sumber kebenaran untuk membaca tanggal dari data Google Sheets.
+ * Mendukung: "YYYY-MM-DD", "YYYY/MM/DD", "DD/MM/YYYY", "DD-MM-YYYY",
+ * tanggal ISO dengan waktu ("...T10:00:00Z" / "...T10:00:00+07:00"),
+ * dan tanggal dengan spasi + waktu ("YYYY-MM-DD HH:mm:ss").
+ * Tidak pernah melempar error - mengembalikan null jika tidak bisa dibaca.
+ */
+function parseDateParts(value: string | null | undefined): DateParts | null {
+  if (!value) return null;
 
-      if (monthNumber >= 1 && monthNumber <= 12) {
-        return months[monthNumber - 1];
-      }
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+
+  // Buang bagian waktu jika ada ("T..." atau spasi diikuti jam)
+  const datePart = trimmed.split(/[T ]/)[0];
+
+  // Format YYYY-MM-DD atau YYYY/MM/DD
+  let match = datePart.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (match) {
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    if (isValidDateParts(year, month, day)) {
+      return { year, month, day };
     }
-
-    return "";
   }
 
-  return months[date.getMonth()];
+  // Format DD-MM-YYYY atau DD/MM/YYYY
+  match = datePart.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+  if (match) {
+    const day = Number(match[1]);
+    const month = Number(match[2]);
+    const year = Number(match[3]);
+    if (isValidDateParts(year, month, day)) {
+      return { year, month, day };
+    }
+  }
+
+  // Fallback terakhir: biarkan Date yang mem-parse (mis. ISO penuh),
+  // lalu baca komponen UTC-nya agar tidak bergeser karena timezone lokal server.
+  const parsedDate = new Date(trimmed);
+  if (!Number.isNaN(parsedDate.getTime())) {
+    return {
+      year: parsedDate.getUTCFullYear(),
+      month: parsedDate.getUTCMonth() + 1,
+      day: parsedDate.getUTCDate(),
+    };
+  }
+
+  return null;
 }
 
-function getYear(dateValue: string) {
-  if (!dateValue) return "";
-
-  const date = new Date(dateValue);
-
-  if (!Number.isNaN(date.getTime())) {
-    return String(date.getFullYear());
-  }
-
-  const match = dateValue.match(/\d{4}/);
-
-  return match?.[0] || "";
+function getYear(dateValue: string): string {
+  const parts = parseDateParts(dateValue);
+  return parts ? String(parts.year) : "";
 }
 
-function formatDate(value: string) {
-  if (!value) return "-";
+function getMonthIndex(dateValue: string): number | null {
+  const parts = parseDateParts(dateValue);
+  return parts ? parts.month - 1 : null;
+}
 
-  const date = new Date(value);
+function getMonthName(dateValue: string): string {
+  const index = getMonthIndex(dateValue);
+  return index === null ? "" : months[index];
+}
 
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
+function getDateKey(dateValue: string): string {
+  const parts = parseDateParts(dateValue);
+  if (!parts) return "";
+  return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}`;
+}
+
+/** Tanggal "hari ini" berdasarkan kalender lokal Indonesia (WIB), bukan timezone server. */
+function getJakartaToday(): DateParts {
+  const nowUtcMs = Date.now();
+  const jakartaMs = nowUtcMs + JAKARTA_OFFSET_MS;
+  const jakarta = new Date(jakartaMs);
+  return {
+    year: jakarta.getUTCFullYear(),
+    month: jakarta.getUTCMonth() + 1,
+    day: jakarta.getUTCDate(),
+  };
+}
+
+function formatDate(value: string): string {
+  const parts = parseDateParts(value);
+  if (!parts) return value || "-";
+
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
 
   return date.toLocaleDateString("id-ID", {
     day: "2-digit",
     month: "short",
     year: "numeric",
+    timeZone: "UTC",
   });
+}
+
+/** Predikat filter gabungan (tahun + bulan + klasifikasi) - dipakai untuk semua statistik & grafik. */
+function matchesFilters(
+  archive: ArchiveData,
+  selectedYear: string,
+  selectedMonth: string,
+  selectedClassification: string
+): boolean {
+  const yearMatches =
+    selectedYear === ALL_YEARS_LABEL ||
+    getYear(archive.tanggalDiterima) === selectedYear;
+
+  const monthMatches =
+    selectedMonth === ALL_MONTHS_LABEL ||
+    getMonthName(archive.tanggalDiterima) === selectedMonth;
+
+  const classificationMatches =
+    selectedClassification === ALL_CLASSIFICATIONS_LABEL ||
+    archive.klasifikasi === selectedClassification;
+
+  return yearMatches && monthMatches && classificationMatches;
 }
 
 export default function DashboardPage() {
@@ -141,11 +257,11 @@ export default function DashboardPage() {
   const [error, setError] = useState("");
   const [username, setUsername] = useState("");
 
-  const [selectedYear, setSelectedYear] = useState(
-    String(new Date().getFullYear())
+  const [selectedYear, setSelectedYear] = useState<string>(ALL_YEARS_LABEL);
+  const [selectedMonth, setSelectedMonth] = useState(ALL_MONTHS_LABEL);
+  const [selectedClassification, setSelectedClassification] = useState(
+    ALL_CLASSIFICATIONS_LABEL
   );
-  const [selectedMonth, setSelectedMonth] = useState("Semua Bulan");
-  const [selectedClassification, setSelectedClassification] = useState("Semua Klasifikasi");
 
   /*
    * ============================
@@ -195,22 +311,17 @@ export default function DashboardPage() {
 
   /*
    * ============================
-   * TANGGAL SEKARANG
+   * TANGGAL SEKARANG (kalender lokal Indonesia / WIB)
    * ============================
    */
 
-  const currentDate = new Date();
+  const jakartaToday = getJakartaToday();
 
-  const currentYear = String(
-    currentDate.getFullYear()
-  );
+  const currentYear = String(jakartaToday.year);
 
-  const currentMonth =
-    months[currentDate.getMonth()];
+  const currentMonth = months[jakartaToday.month - 1];
 
-  const currentDay = currentDate
-    .toISOString()
-    .split("T")[0];
+  const currentDateKey = `${jakartaToday.year}-${pad2(jakartaToday.month)}-${pad2(jakartaToday.day)}`;
 
   /*
    * ============================
@@ -222,16 +333,19 @@ export default function DashboardPage() {
 
   /*
    * ============================
-   * ARSIP TAHUN TERPILIH
+   * ARSIP SESUAI FILTER AKTIF (TAHUN / BULAN / KLASIFIKASI)
+   * Dipakai bersama oleh: grafik bulanan, grafik klasifikasi, dan total filter.
    * ============================
    */
 
-  const yearArchives = useMemo(() => {
-    return archives.filter(
-      (archive) =>
-        getYear(archive.tanggalDiterima) === selectedYear &&
-        (selectedMonth === "Semua Bulan" || getMonthName(archive.tanggalDiterima) === selectedMonth) &&
-        (selectedClassification === "Semua Klasifikasi" || archive.klasifikasi === selectedClassification)
+  const filteredArchives = useMemo(() => {
+    return archives.filter((archive) =>
+      matchesFilters(
+        archive,
+        selectedYear,
+        selectedMonth,
+        selectedClassification
+      )
     );
   }, [archives, selectedYear, selectedMonth, selectedClassification]);
 
@@ -246,9 +360,7 @@ export default function DashboardPage() {
    */
 
   const thisYearCount = archives.filter(
-    (archive) =>
-      getYear(archive.tanggalDiterima) ===
-      currentYear
+    (archive) => getYear(archive.tanggalDiterima) === currentYear
   ).length;
 
   /*
@@ -257,39 +369,24 @@ export default function DashboardPage() {
    * ============================
    */
 
-  const thisMonthCount = archives.filter(
-    (archive) => {
-      return (
-        getYear(archive.tanggalDiterima) ===
-          currentYear &&
-        getMonthName(
-          archive.tanggalDiterima
-        ) === currentMonth
-      );
-    }
-  ).length;
+  const thisMonthCount = archives.filter((archive) => {
+    return (
+      getYear(archive.tanggalDiterima) === currentYear &&
+      getMonthName(archive.tanggalDiterima) === currentMonth
+    );
+  }).length;
 
   /*
    * ============================
    * STATISTIK HARI INI
+   * (dibandingkan sebagai tanggal kalender WIB, bukan string mentah)
    * ============================
    */
 
-  const todayCount = archives.filter(
-    (archive) => {
-      if (!archive.tanggalDiterima) {
-        return false;
-      }
-
-      return (
-        archive.tanggalDiterima ===
-          currentDay ||
-        archive.tanggalDiterima.includes(
-          currentDay
-        )
-      );
-    }
-  ).length;
+  const todayCount = archives.filter((archive) => {
+    const key = getDateKey(archive.tanggalDiterima);
+    return key !== "" && key === currentDateKey;
+  }).length;
 
   /*
    * ============================
@@ -338,7 +435,7 @@ export default function DashboardPage() {
 
   /*
    * ============================
-   * DAFTAR TAHUN
+   * DAFTAR TAHUN (TERMASUK "SEMUA TAHUN")
    * ============================
    */
 
@@ -346,9 +443,7 @@ export default function DashboardPage() {
     const years = new Set<string>();
 
     archives.forEach((archive) => {
-      const year = getYear(
-        archive.tanggalDiterima
-      );
+      const year = getYear(archive.tanggalDiterima);
 
       if (year) {
         years.add(year);
@@ -357,63 +452,50 @@ export default function DashboardPage() {
 
     years.add(currentYear);
 
-    return Array.from(years).sort(
-      (a, b) =>
-        Number(b) - Number(a)
+    const sortedYears = Array.from(years).sort(
+      (a, b) => Number(b) - Number(a)
     );
+
+    return [ALL_YEARS_LABEL, ...sortedYears];
   }, [archives, currentYear]);
 
   /*
    * ============================
    * DATA GRAFIK BULANAN
+   * (mengikuti filter aktif: tahun / semua tahun, bulan, klasifikasi)
    * ============================
    */
 
-  const monthlyData = months.map(
-    (month) => {
-      const count =
-        yearArchives.filter(
-          (archive) =>
-            getMonthName(
-              archive.tanggalDiterima
-            ) === month
-        ).length;
+  const monthlyData = months.map((month) => {
+    const count = filteredArchives.filter(
+      (archive) => getMonthName(archive.tanggalDiterima) === month
+    ).length;
 
-      return {
-        month,
-        short: month.substring(0, 3),
-        count,
-      };
-    }
-  );
+    return {
+      month,
+      short: month.substring(0, 3),
+      count,
+    };
+  });
 
   const maxMonthlyCount = Math.max(
-    ...monthlyData.map(
-      (item) => item.count
-    ),
+    ...monthlyData.map((item) => item.count),
     1
   );
 
   /*
    * ============================
    * DATA KLASIFIKASI
+   * (mengikuti filter aktif - dataset SAMA dengan grafik bulanan)
    * ============================
    */
 
-  const classificationData = [
-    "B",
-    "SE",
-    "SP",
-    "ST",
-    "STR",
-    "Lainnya",
-  ].map((classification) => {
-    const count =
-      yearArchives.filter(
-        (archive) =>
-          archive.klasifikasi ===
-          classification
-      ).length;
+  const classificationData = (
+    ["B", "SE", "SP", "ST", "STR", "R", "Brafax", "Lainnya"] as ClassificationKey[]
+  ).map((classification) => {
+    const count = filteredArchives.filter(
+      (archive) => archive.klasifikasi === classification
+    ).length;
 
     return {
       classification,
@@ -422,9 +504,7 @@ export default function DashboardPage() {
   });
 
   const maxClassification = Math.max(
-    ...classificationData.map(
-      (item) => item.count
-    ),
+    ...classificationData.map((item) => item.count),
     1
   );
 
@@ -436,7 +516,22 @@ export default function DashboardPage() {
   const classificationGradient = classificationTotal
     ? `conic-gradient(${classificationData.reduce<{ stops: string[]; position: number }>((result, item) => {
         const nextPosition = result.position + (item.count / classificationTotal) * 100;
-        const color = item.classification === "B" ? "#3b82f6" : item.classification === "SE" ? "#6366f1" : item.classification === "SP" ? "#06b6d4" : item.classification === "ST" ? "#10b981" : item.classification === "STR" ? "#f59e0b" : "#94a3b8";
+        const color =
+          item.classification === "B"
+            ? "#3b82f6"
+            : item.classification === "SE"
+              ? "#6366f1"
+              : item.classification === "SP"
+                ? "#06b6d4"
+                : item.classification === "ST"
+                  ? "#10b981"
+                  : item.classification === "STR"
+                    ? "#f59e0b"
+                    : item.classification === "R"
+                      ? "#f43f5e"
+                      : item.classification === "Brafax"
+                        ? "#8b5cf6"
+                        : "#94a3b8";
         result.stops.push(`${color} ${result.position}% ${nextPosition}%`);
         result.position = nextPosition;
         return result;
@@ -446,24 +541,12 @@ export default function DashboardPage() {
   /*
    * ============================
    * SURAT TERBARU
+   * (10 baris PALING BAWAH dari data /api/archives,
+   *  ditampilkan dari yang paling baru [baris terakhir] ke yang lebih lama)
    * ============================
    */
 
-  const recentArchives = [...archives]
-    .sort((a, b) => {
-      const dateA = new Date(
-        a.tanggalInput ||
-          a.tanggalDiterima
-      ).getTime();
-
-      const dateB = new Date(
-        b.tanggalInput ||
-          b.tanggalDiterima
-      ).getTime();
-
-      return dateB - dateA;
-    })
-    .slice(0, 5);
+  const recentArchives = archives.slice(-10).reverse();
 
   /*
    * ============================
@@ -527,14 +610,14 @@ export default function DashboardPage() {
               {availableYears.map((year) => <option key={year} value={year}>{year}</option>)}
             </select>
             <select value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} className="h-10 rounded-lg border border-slate-200 px-3 text-sm text-slate-600 outline-none focus:border-blue-500">
-              <option>Semua Bulan</option>
+              <option>{ALL_MONTHS_LABEL}</option>
               {months.map((month) => <option key={month} value={month}>{month}</option>)}
             </select>
             <select value={selectedClassification} onChange={(event) => setSelectedClassification(event.target.value)} className="h-10 rounded-lg border border-slate-200 px-3 text-sm text-slate-600 outline-none focus:border-blue-500">
-              <option>Semua Klasifikasi</option>
+              <option>{ALL_CLASSIFICATIONS_LABEL}</option>
               {availableClassifications.map((classification) => <option key={classification} value={classification}>{classification}</option>)}
             </select>
-            <button type="button" onClick={() => { setSelectedYear(currentYear); setSelectedMonth("Semua Bulan"); setSelectedClassification("Semua Klasifikasi"); }} className="h-10 rounded-lg border border-slate-200 px-3 text-sm font-medium text-slate-500 hover:bg-slate-50">Reset</button>
+            <button type="button" onClick={() => { setSelectedYear(ALL_YEARS_LABEL); setSelectedMonth(ALL_MONTHS_LABEL); setSelectedClassification(ALL_CLASSIFICATIONS_LABEL); }} className="h-10 rounded-lg border border-slate-200 px-3 text-sm font-medium text-slate-500 hover:bg-slate-50">Reset</button>
           </div>
         </div>
       </section>
@@ -717,11 +800,11 @@ export default function DashboardPage() {
           <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4">
 
             <p className="text-xs text-slate-400">
-              Total tahun {selectedYear}
+              Total {selectedYear === ALL_YEARS_LABEL ? "semua tahun" : `tahun ${selectedYear}`}
             </p>
 
             <p className="font-semibold text-blue-600">
-              {yearArchives.length.toLocaleString(
+              {filteredArchives.length.toLocaleString(
                 "id-ID"
               )}{" "}
               surat
@@ -742,7 +825,7 @@ export default function DashboardPage() {
           </h2>
 
           <p className="mt-1 text-xs text-slate-500">
-            Distribusi tahun {selectedYear}
+            Distribusi {selectedYear === ALL_YEARS_LABEL ? "semua tahun" : `tahun ${selectedYear}`}
           </p>
 
           <div className="mt-5 flex justify-center">
@@ -756,11 +839,7 @@ export default function DashboardPage() {
             {classificationData.map(
               (item) => {
 
-                const colors =
-                  classificationColors[
-                    item.classification
-                  ] ||
-                  classificationColors.Lainnya;
+                const colors = getClassificationStyle(item.classification);
 
                 const width =
                   item.count === 0
@@ -798,10 +877,10 @@ export default function DashboardPage() {
                       </div>
 
                       <span className="text-xs font-semibold text-slate-500">
-                        {yearArchives.length
+                        {filteredArchives.length
                           ? Math.round(
                               (item.count /
-                                yearArchives.length) *
+                                filteredArchives.length) *
                                 100
                             )
                           : 0}
@@ -908,11 +987,7 @@ export default function DashboardPage() {
               {recentArchives.map(
                 (archive, index) => {
 
-                  const colors =
-                    classificationColors[
-                      archive.klasifikasi
-                    ] ||
-                    classificationColors.Lainnya;
+                  const colors = getClassificationStyle(archive.klasifikasi);
 
                   return (
                     <tr
@@ -988,11 +1063,7 @@ export default function DashboardPage() {
           {recentArchives.map(
             (archive, index) => {
 
-              const colors =
-                classificationColors[
-                  archive.klasifikasi
-                ] ||
-                classificationColors.Lainnya;
+              const colors = getClassificationStyle(archive.klasifikasi);
 
               return (
                 <div

@@ -36,6 +36,8 @@ const classifications = [
   "SP",
   "ST",
   "STR",
+  "R",
+  "Brafax",
   "Lainnya",
 ];
 
