@@ -85,7 +85,7 @@ Setiap selesai melakukan perubahan:
 
 git status
 git add .
-git commit -m "Deskripsi perubahan"
+git commit -m "Camera"
 git push
 
 Contoh:
