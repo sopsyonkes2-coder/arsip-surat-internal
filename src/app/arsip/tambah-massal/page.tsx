@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useState } from "react";
 import {
   ArrowLeft,
   Camera,
@@ -9,10 +9,8 @@ import {
   Plus,
   Save,
   Trash2,
-  X,
-  Loader2,
 } from "lucide-react";
-import { jsPDF } from "jspdf";
+import CameraCapture from "@/components/CameraCapture";
 
 type Row = {
   id: number;
@@ -66,11 +64,6 @@ export default function TambahMassalPage() {
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState("");
   const [cameraRowId, setCameraRowId] = useState<number | null>(null);
-  const [capturing, setCapturing] = useState(false);
-  const [cameraError, setCameraError] = useState("");
-
-  const cameraVideoRef = useRef<HTMLVideoElement>(null);
-  const cameraStreamRef = useRef<MediaStream | null>(null);
 
   const updateRow = (
     id: number,
@@ -84,229 +77,6 @@ export default function TambahMassalPage() {
 
   const duplicateRow = (row: Row) =>
     setRows((current) => [...current, { ...row, id: Date.now() }]);
-
-  /** Lepas kamera sepenuhnya + jeda agar hardware free sebelum getUserMedia lagi */
-  const stopCameraStream = useCallback(async () => {
-    const stream = cameraStreamRef.current;
-    cameraStreamRef.current = null;
-
-    const video = cameraVideoRef.current;
-    if (video) {
-      try {
-        video.pause();
-      } catch {
-        /* ignore */
-      }
-      video.srcObject = null;
-      try {
-        video.load();
-      } catch {
-        /* ignore */
-      }
-    }
-
-    if (stream) {
-      for (const track of stream.getTracks()) {
-        try {
-          track.stop();
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-
-    // penting: browser (terutama mobile) butuh waktu melepaskan kamera
-    await new Promise((r) => setTimeout(r, 200));
-  }, []);
-
-  // attach stream ke video setelah modal terbuka
-  useEffect(() => {
-    if (cameraRowId === null || !cameraStreamRef.current) return;
-
-    const video = cameraVideoRef.current;
-    if (!video) return;
-
-    video.srcObject = cameraStreamRef.current;
-
-    const play = () => {
-      void video.play().catch(() => {});
-    };
-
-    if (video.readyState >= 1) {
-      play();
-    } else {
-      video.onloadedmetadata = play;
-    }
-
-    return () => {
-      video.onloadedmetadata = null;
-    };
-  }, [cameraRowId]);
-
-  // lock scroll saat kamera terbuka
-  useEffect(() => {
-    if (cameraRowId === null) return;
-    const scrollY = window.scrollY;
-    const body = document.body;
-    const html = document.documentElement;
-    const prev = {
-      overflow: body.style.overflow,
-      position: body.style.position,
-      top: body.style.top,
-      width: body.style.width,
-      htmlOverflow: html.style.overflow,
-    };
-    body.style.overflow = "hidden";
-    body.style.position = "fixed";
-    body.style.top = `-${scrollY}px`;
-    body.style.width = "100%";
-    html.style.overflow = "hidden";
-    return () => {
-      body.style.overflow = prev.overflow;
-      body.style.position = prev.position;
-      body.style.top = prev.top;
-      body.style.width = prev.width;
-      html.style.overflow = prev.htmlOverflow;
-      window.scrollTo(0, scrollY);
-    };
-  }, [cameraRowId]);
-
-  // cleanup saat unmount
-  useEffect(() => {
-    return () => {
-      void stopCameraStream();
-    };
-  }, [stopCameraStream]);
-
-  const openRowCamera = async (rowId: number) => {
-    setCameraError("");
-    setResult("");
-    setCapturing(false);
-
-    try {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        throw new Error("Kamera tidak tersedia di perangkat ini.");
-      }
-
-      // SELALU lepas stream lama dulu (hindari black screen / device in use)
-      await stopCameraStream();
-
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: "environment" },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-          },
-          audio: false,
-        });
-      } catch {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: false,
-        });
-      }
-
-      if (!stream.getVideoTracks().length) {
-        stream.getTracks().forEach((t) => t.stop());
-        throw new Error("Tidak ada video track dari kamera.");
-      }
-
-      cameraStreamRef.current = stream;
-      setCameraRowId(rowId);
-    } catch (err: unknown) {
-      await stopCameraStream();
-      setCameraRowId(null);
-
-      const msg =
-        err instanceof Error
-          ? err.name === "NotAllowedError"
-            ? "Izin kamera ditolak. Izinkan akses kamera di browser."
-            : err.name === "NotReadableError" || err.name === "AbortError"
-              ? "Kamera sedang dipakai aplikasi lain atau belum dilepas. Tutup aplikasi lain lalu coba lagi."
-              : err.message
-          : "Kamera tidak dapat digunakan.";
-
-      setResult(msg);
-    }
-  };
-
-  const closeRowCamera = () => {
-    void stopCameraStream();
-    setCameraRowId(null);
-    setCapturing(false);
-    setCameraError("");
-  };
-
-  const captureRowCamera = () => {
-    const video = cameraVideoRef.current;
-    if (!video?.videoWidth || cameraRowId === null) {
-      setCameraError("Kamera belum siap. Tunggu sebentar lalu coba lagi.");
-      return;
-    }
-    if (capturing) return;
-    setCapturing(true);
-    setCameraError("");
-
-    try {
-      const canvas = document.createElement("canvas");
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      canvas.getContext("2d")?.drawImage(video, 0, 0);
-
-      let exportCanvas = canvas;
-      const maxSide = 1600;
-      const maxDim = Math.max(canvas.width, canvas.height);
-      if (maxDim > maxSide) {
-        const scale = maxSide / maxDim;
-        const scaled = document.createElement("canvas");
-        scaled.width = Math.round(canvas.width * scale);
-        scaled.height = Math.round(canvas.height * scale);
-        const sctx = scaled.getContext("2d");
-        if (sctx) {
-          sctx.imageSmoothingEnabled = true;
-          sctx.imageSmoothingQuality = "high";
-          sctx.drawImage(canvas, 0, 0, scaled.width, scaled.height);
-          exportCanvas = scaled;
-        }
-      }
-
-      const dataUrl = exportCanvas.toDataURL("image/jpeg", 0.78);
-      const ratio = Math.min(
-        194 / exportCanvas.width,
-        281 / exportCanvas.height
-      );
-      const drawW = exportCanvas.width * ratio;
-      const drawH = exportCanvas.height * ratio;
-      const pdf = new jsPDF({ unit: "mm", format: "a4", compress: true });
-      pdf.addImage(
-        dataUrl,
-        "JPEG",
-        (210 - drawW) / 2,
-        (297 - drawH) / 2,
-        drawW,
-        drawH,
-        undefined,
-        "FAST"
-      );
-      updateRow(
-        cameraRowId,
-        "file",
-        new File(
-          [pdf.output("arraybuffer")],
-          `scan-${cameraRowId}-${Date.now()}.pdf`,
-          { type: "application/pdf" }
-        )
-      );
-      closeRowCamera();
-    } catch (err) {
-      setCameraError(
-        err instanceof Error ? err.message : "Gagal mengambil foto."
-      );
-      setCapturing(false);
-    }
-  };
 
   const saveAll = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -353,11 +123,6 @@ export default function TambahMassalPage() {
     setResult(`Berhasil: ${success} | Gagal: ${failed}`);
     setSaving(false);
   };
-
-  const cameraRowIndex =
-    cameraRowId === null
-      ? -1
-      : rows.findIndex((row) => row.id === cameraRowId);
 
   return (
     <div className="-mx-4 min-h-[calc(100vh-4rem)] w-[calc(100%+2rem)] bg-slate-50 sm:-mx-6 sm:w-[calc(100%+3rem)] lg:-mx-8 lg:w-[calc(100%+4rem)]">
@@ -458,7 +223,7 @@ export default function TambahMassalPage() {
                       />
                       <button
                         type="button"
-                        onClick={() => void openRowCamera(row.id)}
+                        onClick={() => setCameraRowId(row.id)}
                         className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-2 text-[11px] font-semibold text-blue-700 hover:bg-blue-100"
                       >
                         <Camera size={14} />
@@ -524,83 +289,17 @@ export default function TambahMassalPage() {
         </div>
       </form>
 
-      {cameraRowId !== null && (
-        <div
-          className="fixed inset-0 z-[9999] overflow-hidden bg-black"
-          style={{
-            width: "100vw",
-            height: "100dvh",
-            maxHeight: "100dvh",
-            overscrollBehavior: "none",
-          }}
-          role="dialog"
-          aria-modal="true"
-        >
-          <div className="flex h-full w-full flex-col overflow-hidden">
-            <div className="flex shrink-0 items-center justify-between px-4 pb-2 pt-[max(0.75rem,env(safe-area-inset-top))]">
-              <div>
-                <p className="text-sm font-semibold text-white">Scan Kamera</p>
-                <p className="text-xs text-white/60">
-                  Baris {cameraRowIndex >= 0 ? cameraRowIndex + 1 : "—"}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={closeRowCamera}
-                className="rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
-              >
-                <X size={22} />
-              </button>
-            </div>
-
-            <div className="relative min-h-0 flex-1 overflow-hidden">
-              <video
-                ref={cameraVideoRef}
-                autoPlay
-                playsInline
-                muted
-                className="absolute inset-0 h-full w-full object-cover"
-              />
-              <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
-                <div className="h-[65%] w-[78%] max-w-md rounded-2xl border-2 border-dashed border-white/30" />
-              </div>
-              {cameraError && (
-                <div className="absolute bottom-4 left-1/2 w-[90%] max-w-sm -translate-x-1/2 rounded-xl bg-red-600/90 px-4 py-2 text-center text-sm text-white">
-                  {cameraError}
-                </div>
-              )}
-            </div>
-
-            <div className="shrink-0 px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-4">
-              <div className="mx-auto flex max-w-md items-center justify-center gap-8">
-                <button
-                  type="button"
-                  onClick={closeRowCamera}
-                  className="rounded-full border border-white/25 bg-white/10 px-5 py-3 text-sm font-semibold text-white"
-                >
-                  Batal
-                </button>
-                <button
-                  type="button"
-                  onClick={captureRowCamera}
-                  disabled={capturing}
-                  className="flex h-16 w-16 items-center justify-center rounded-full border-4 border-white bg-white/15 disabled:opacity-60"
-                >
-                  {capturing ? (
-                    <Loader2 size={28} className="animate-spin text-white" />
-                  ) : (
-                    <span className="h-12 w-12 rounded-full bg-white" />
-                  )}
-                </button>
-                <div className="w-[72px]" />
-              </div>
-              <p className="mt-2 text-center text-xs text-white/70">
-                {capturing ? "Memproses PDF…" : "Ambil Foto jadi PDF"}
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Scanner lengkap (OpenCV + multi-page) */}
+      <CameraCapture
+        open={cameraRowId !== null}
+        onClose={() => setCameraRowId(null)}
+        onComplete={(scannedFile) => {
+          if (cameraRowId !== null) {
+            updateRow(cameraRowId, "file", scannedFile);
+          }
+          setCameraRowId(null);
+        }}
+      />
     </div>
   );
 }
