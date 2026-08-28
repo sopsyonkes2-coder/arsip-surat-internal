@@ -63,27 +63,49 @@ type PdfPreviewState = {
   sizeBytes: number;
 };
 
-/* ========== IMAGE PROCESSING (Canvas API) ========== */
+const JPEG_QUALITY = 0.72;
+const MAX_IMAGE_SIDE = 1400;
 
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = document.createElement("img");
     img.onload = () => resolve(img);
-    img.onerror = reject;
+    img.onerror = () => reject(new Error("Gagal memuat gambar."));
     img.src = src;
   });
 }
 
-/** Deteksi bounding box dokumen berdasarkan konten (threshold luminance). Fallback: full frame. */
+function canvasToJpeg(canvas: HTMLCanvasElement, quality = JPEG_QUALITY): string {
+  return canvas.toDataURL("image/jpeg", quality);
+}
+
+/** Resize canvas jika lebih besar dari MAX_IMAGE_SIDE */
+function downscaleCanvas(source: HTMLCanvasElement): HTMLCanvasElement {
+  const maxSide = Math.max(source.width, source.height);
+  if (maxSide <= MAX_IMAGE_SIDE) return source;
+
+  const scale = MAX_IMAGE_SIDE / maxSide;
+  const w = Math.round(source.width * scale);
+  const h = Math.round(source.height * scale);
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = h;
+  const ctx = out.getContext("2d");
+  if (!ctx) return source;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(source, 0, 0, w, h);
+  return out;
+}
+
 function detectDocumentBounds(
   imageData: ImageData,
   width: number,
   height: number
 ): DetectedBounds {
   const data = imageData.data;
-  const threshold = 38; // selisih dari background rata-rata
+  const step = 6;
   let sum = 0;
-  const step = 8;
   let samples = 0;
 
   for (let y = 0; y < height; y += step) {
@@ -93,7 +115,8 @@ function detectDocumentBounds(
       samples++;
     }
   }
-  const avg = sum / samples;
+  const avg = samples ? sum / samples : 128;
+  const threshold = 42;
 
   let minX = width;
   let minY = height;
@@ -115,13 +138,12 @@ function detectDocumentBounds(
     }
   }
 
-  if (!found || maxX - minX < width * 0.25 || maxY - minY < height * 0.25) {
+  if (!found || maxX - minX < width * 0.2 || maxY - minY < height * 0.2) {
     return { x: 0, y: 0, width, height };
   }
 
-  // padding kecil agar tepi tidak terpotong
-  const padX = Math.round(width * 0.02);
-  const padY = Math.round(height * 0.02);
+  const padX = Math.round(width * 0.015);
+  const padY = Math.round(height * 0.015);
   minX = Math.max(0, minX - padX);
   minY = Math.max(0, minY - padY);
   maxX = Math.min(width - 1, maxX + padX);
@@ -130,188 +152,130 @@ function detectDocumentBounds(
   return {
     x: minX,
     y: minY,
-    width: maxX - minX,
-    height: maxY - minY,
+    width: Math.max(1, maxX - minX),
+    height: Math.max(1, maxY - minY),
   };
 }
 
-/** Estimasi sudut kemiringan sederhana via proyeksi horizontal (deskew ringan). */
-function estimateSkewAngle(
-  imageData: ImageData,
-  width: number,
-  height: number
-): number {
-  const data = imageData.data;
-  const angles = [-8, -6, -4, -2, 0, 2, 4, 6, 8];
-  let bestAngle = 0;
-  let bestScore = -1;
-
-  for (const angle of angles) {
-    const rad = (angle * Math.PI) / 180;
-    const cos = Math.cos(rad);
-    const sin = Math.sin(rad);
-    const projection = new Float32Array(height);
-    let count = 0;
-
-    for (let y = 0; y < height; y += 4) {
-      for (let x = 0; x < width; x += 4) {
-        const i = (y * width + x) * 4;
-        const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-        if (lum < 140) {
-          const ny = Math.round(x * sin + y * cos);
-          if (ny >= 0 && ny < height) {
-            projection[ny]++;
-            count++;
-          }
-        }
-      }
-    }
-
-    if (count < 50) continue;
-
-    // skor: variansi proyeksi (baris teks lurus → puncak tajam)
-    let mean = 0;
-    for (let i = 0; i < height; i++) mean += projection[i];
-    mean /= height;
-    let variance = 0;
-    for (let i = 0; i < height; i++) {
-      const d = projection[i] - mean;
-      variance += d * d;
-    }
-    if (variance > bestScore) {
-      bestScore = variance;
-      bestAngle = angle;
-    }
-  }
-
-  return bestAngle;
-}
-
-function applyFilterToImageData(
+function applyFilterPixels(
   imageData: ImageData,
   filter: ScanFilter
 ): ImageData {
-  const data = imageData.data;
+  const src = imageData.data;
   const out = new ImageData(
-    new Uint8ClampedArray(data),
+    new Uint8ClampedArray(src),
     imageData.width,
     imageData.height
   );
   const d = out.data;
 
   if (filter === "color") {
-    // sedikit peningkatan ketajaman / kontras
     for (let i = 0; i < d.length; i += 4) {
-      d[i] = Math.min(255, Math.max(0, (d[i] - 128) * 1.12 + 128));
-      d[i + 1] = Math.min(255, Math.max(0, (d[i + 1] - 128) * 1.12 + 128));
-      d[i + 2] = Math.min(255, Math.max(0, (d[i + 2] - 128) * 1.12 + 128));
+      d[i] = Math.min(255, Math.max(0, (d[i] - 128) * 1.1 + 128));
+      d[i + 1] = Math.min(255, Math.max(0, (d[i + 1] - 128) * 1.1 + 128));
+      d[i + 2] = Math.min(255, Math.max(0, (d[i + 2] - 128) * 1.1 + 128));
     }
   } else if (filter === "gray") {
     for (let i = 0; i < d.length; i += 4) {
-      const g =
-        0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-      // kontras ringan agar tulisan tetap tajam
-      const v = Math.min(255, Math.max(0, (g - 128) * 1.15 + 128));
+      const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      const v = Math.min(255, Math.max(0, (g - 128) * 1.12 + 128));
       d[i] = d[i + 1] = d[i + 2] = v;
     }
   } else {
-    // B&W threshold adaptif + sedikit noise reduction
     let sum = 0;
+    const n = d.length / 4;
     for (let i = 0; i < d.length; i += 4) {
       sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
     }
-    const mean = sum / (d.length / 4);
-    const threshold = Math.min(185, Math.max(110, mean * 0.92));
-
+    const mean = sum / n;
+    const threshold = Math.min(180, Math.max(100, mean * 0.9));
     for (let i = 0; i < d.length; i += 4) {
-      const g =
-        0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
       const v = g < threshold ? 0 : 255;
       d[i] = d[i + 1] = d[i + 2] = v;
     }
   }
-
   return out;
 }
 
-async function processCaptureFrame(
+function applyFilterToCanvas(
+  source: HTMLCanvasElement,
+  filter: ScanFilter
+): HTMLCanvasElement {
+  const ctx = source.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return source;
+  const filtered = applyFilterPixels(
+    ctx.getImageData(0, 0, source.width, source.height),
+    filter
+  );
+  const out = document.createElement("canvas");
+  out.width = source.width;
+  out.height = source.height;
+  out.getContext("2d")?.putImageData(filtered, 0, 0);
+  return out;
+}
+
+/**
+ * Ambil frame dari video → auto crop (jika berhasil) → resize → simpan original
+ * Lalu terapkan filter untuk preview.
+ * Jika apa pun gagal, fallback: full frame tanpa crop.
+ */
+function processCaptureFrame(
   video: HTMLVideoElement,
   filter: ScanFilter
-): Promise<{ originalDataUrl: string; previewDataUrl: string }> {
+): { originalDataUrl: string; previewDataUrl: string } {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   if (!vw || !vh) {
-    throw new Error("Kamera belum siap.");
+    throw new Error("Kamera belum siap. Tunggu sebentar lalu coba lagi.");
   }
 
-  const srcCanvas = document.createElement("canvas");
-  srcCanvas.width = vw;
-  srcCanvas.height = vh;
-  const srcCtx = srcCanvas.getContext("2d", { willReadFrequently: true });
-  if (!srcCtx) throw new Error("Canvas tidak didukung.");
+  const src = document.createElement("canvas");
+  src.width = vw;
+  src.height = vh;
+  const srcCtx = src.getContext("2d", { willReadFrequently: true });
+  if (!srcCtx) throw new Error("Canvas tidak didukung di browser ini.");
   srcCtx.drawImage(video, 0, 0);
 
-  let imageData = srcCtx.getImageData(0, 0, vw, vh);
-  const bounds = detectDocumentBounds(imageData, vw, vh);
+  let working: HTMLCanvasElement = src;
 
-  // Crop
-  const cropCanvas = document.createElement("canvas");
-  cropCanvas.width = bounds.width;
-  cropCanvas.height = bounds.height;
-  const cropCtx = cropCanvas.getContext("2d", { willReadFrequently: true });
-  if (!cropCtx) throw new Error("Canvas tidak didukung.");
-  cropCtx.drawImage(
-    srcCanvas,
-    bounds.x,
-    bounds.y,
-    bounds.width,
-    bounds.height,
-    0,
-    0,
-    bounds.width,
-    bounds.height
-  );
+  try {
+    const id = srcCtx.getImageData(0, 0, vw, vh);
+    const bounds = detectDocumentBounds(id, vw, vh);
+    const isFull =
+      bounds.x === 0 &&
+      bounds.y === 0 &&
+      bounds.width === vw &&
+      bounds.height === vh;
 
-  // Deskew ringan
-  imageData = cropCtx.getImageData(0, 0, bounds.width, bounds.height);
-  const skew = estimateSkewAngle(imageData, bounds.width, bounds.height);
-
-  let workingCanvas = cropCanvas;
-  if (Math.abs(skew) >= 1.5) {
-    const rad = (-skew * Math.PI) / 180;
-    const cos = Math.abs(Math.cos(rad));
-    const sin = Math.abs(Math.sin(rad));
-    const nw = Math.ceil(bounds.width * cos + bounds.height * sin);
-    const nh = Math.ceil(bounds.width * sin + bounds.height * cos);
-    const rotCanvas = document.createElement("canvas");
-    rotCanvas.width = nw;
-    rotCanvas.height = nh;
-    const rotCtx = rotCanvas.getContext("2d");
-    if (rotCtx) {
-      rotCtx.fillStyle = "#ffffff";
-      rotCtx.fillRect(0, 0, nw, nh);
-      rotCtx.translate(nw / 2, nh / 2);
-      rotCtx.rotate(rad);
-      rotCtx.drawImage(cropCanvas, -bounds.width / 2, -bounds.height / 2);
-      workingCanvas = rotCanvas;
+    if (!isFull) {
+      const crop = document.createElement("canvas");
+      crop.width = bounds.width;
+      crop.height = bounds.height;
+      const cctx = crop.getContext("2d");
+      if (cctx) {
+        cctx.drawImage(
+          src,
+          bounds.x,
+          bounds.y,
+          bounds.width,
+          bounds.height,
+          0,
+          0,
+          bounds.width,
+          bounds.height
+        );
+        working = crop;
+      }
     }
+  } catch {
+    working = src;
   }
 
-  // Simpan original (crop + deskew) sebagai JPEG
-  const originalDataUrl = workingCanvas.toDataURL("image/jpeg", 0.92);
-
-  // Apply filter untuk preview
-  const wCtx = workingCanvas.getContext("2d", { willReadFrequently: true });
-  if (!wCtx) throw new Error("Canvas tidak didukung.");
-  const filtered = applyFilterToImageData(
-    wCtx.getImageData(0, 0, workingCanvas.width, workingCanvas.height),
-    filter
-  );
-  const filterCanvas = document.createElement("canvas");
-  filterCanvas.width = workingCanvas.width;
-  filterCanvas.height = workingCanvas.height;
-  filterCanvas.getContext("2d")?.putImageData(filtered, 0, 0);
-  const previewDataUrl = filterCanvas.toDataURL("image/jpeg", 0.92);
+  working = downscaleCanvas(working);
+  const originalDataUrl = canvasToJpeg(working, JPEG_QUALITY);
+  const filtered = applyFilterToCanvas(working, filter);
+  const previewDataUrl = canvasToJpeg(filtered, JPEG_QUALITY);
 
   return { originalDataUrl, previewDataUrl };
 }
@@ -327,15 +291,9 @@ async function reapplyFilter(
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) return originalDataUrl;
   ctx.drawImage(img, 0, 0);
-  const filtered = applyFilterToImageData(
-    ctx.getImageData(0, 0, img.width, img.height),
-    filter
-  );
-  ctx.putImageData(filtered, 0, 0);
-  return canvas.toDataURL("image/jpeg", 0.92);
+  const filtered = applyFilterToCanvas(canvas, filter);
+  return canvasToJpeg(filtered, JPEG_QUALITY);
 }
-
-/* ========== PAGE COMPONENT ========== */
 
 export default function TambahArsipPage() {
   const [form, setForm] = useState({
@@ -368,6 +326,7 @@ export default function TambahArsipPage() {
   const [capturing, setCapturing] = useState(false);
   const [docDetected, setDocDetected] = useState(false);
   const [buildingPdf, setBuildingPdf] = useState(false);
+  const [captureMessage, setCaptureMessage] = useState("");
 
   const [pdfPreview, setPdfPreview] = useState<PdfPreviewState | null>(null);
   const [pdfPreviewOpen, setPdfPreviewOpen] = useState(false);
@@ -378,10 +337,7 @@ export default function TambahArsipPage() {
     >
   ) => {
     const { name, value } = event.target;
-    setForm((previous) => ({
-      ...previous,
-      [name]: value,
-    }));
+    setForm((previous) => ({ ...previous, [name]: value }));
   };
 
   const handleFile = (selectedFile: File | undefined) => {
@@ -404,9 +360,7 @@ export default function TambahArsipPage() {
     handleFile(event.dataTransfer.files?.[0]);
   };
 
-  const removeFile = () => {
-    setFile(null);
-  };
+  const removeFile = () => setFile(null);
 
   const stopDetectLoop = useCallback(() => {
     if (detectLoopRef.current !== null) {
@@ -417,150 +371,105 @@ export default function TambahArsipPage() {
 
   const stopStream = useCallback(() => {
     stopDetectLoop();
-    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
+    if (videoRef.current) videoRef.current.srcObject = null;
   }, [stopDetectLoop]);
 
-  // Cleanup unmount
   useEffect(() => {
     return () => {
       stopStream();
-      if (pdfPreview?.url) {
-        URL.revokeObjectURL(pdfPreview.url);
-      }
+      if (pdfPreview?.url) URL.revokeObjectURL(pdfPreview.url);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Attach stream + detection loop
+  // Video + outline deteksi
   useEffect(() => {
     if (!cameraOpen || !streamRef.current) return;
 
     const video = videoRef.current;
     if (video) {
       video.srcObject = streamRef.current;
-      void video.play();
+      void video.play().catch(() => {});
     }
 
-    const runDetect = () => {
+    let lastDetect = 0;
+
+    const tick = (ts: number) => {
       const v = videoRef.current;
       const overlay = overlayRef.current;
       if (!v || !overlay || !v.videoWidth) {
-        detectLoopRef.current = requestAnimationFrame(runDetect);
+        detectLoopRef.current = requestAnimationFrame(tick);
         return;
       }
 
-      const ow = overlay.width;
-      const oh = overlay.height;
-      if (ow !== v.clientWidth || oh !== v.clientHeight) {
-        overlay.width = v.clientWidth;
-        overlay.height = v.clientHeight;
+      if (overlay.width !== v.clientWidth || overlay.height !== v.clientHeight) {
+        overlay.width = v.clientWidth || 1;
+        overlay.height = v.clientHeight || 1;
       }
 
-      const ctx = overlay.getContext("2d");
-      if (!ctx) {
-        detectLoopRef.current = requestAnimationFrame(runDetect);
-        return;
+      // Deteksi tiap ~200ms agar tidak berat
+      if (ts - lastDetect > 200) {
+        lastDetect = ts;
+        try {
+          const sample = document.createElement("canvas");
+          const sw = Math.min(240, v.videoWidth);
+          const sh = Math.round((sw / v.videoWidth) * v.videoHeight);
+          sample.width = sw;
+          sample.height = sh;
+          const sctx = sample.getContext("2d", { willReadFrequently: true });
+          if (sctx) {
+            sctx.drawImage(v, 0, 0, sw, sh);
+            const id = sctx.getImageData(0, 0, sw, sh);
+            const bounds = detectDocumentBounds(id, sw, sh);
+            const isFull =
+              bounds.x === 0 &&
+              bounds.y === 0 &&
+              bounds.width === sw &&
+              bounds.height === sh;
+            setDocDetected(!isFull);
+
+            const ctx = overlay.getContext("2d");
+            if (ctx) {
+              const scaleX = overlay.width / sw;
+              const scaleY = overlay.height / sh;
+              ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+              if (!isFull) {
+                ctx.fillStyle = "rgba(0,0,0,0.3)";
+                ctx.fillRect(0, 0, overlay.width, overlay.height);
+                ctx.clearRect(
+                  bounds.x * scaleX,
+                  bounds.y * scaleY,
+                  bounds.width * scaleX,
+                  bounds.height * scaleY
+                );
+              }
+
+              ctx.strokeStyle = isFull ? "rgba(148,163,184,0.5)" : "#22c55e";
+              ctx.lineWidth = 2.5;
+              ctx.setLineDash(isFull ? [6, 4] : []);
+              ctx.strokeRect(
+                bounds.x * scaleX + 1,
+                bounds.y * scaleY + 1,
+                bounds.width * scaleX - 2,
+                bounds.height * scaleY - 2
+              );
+            }
+          }
+        } catch {
+          // ignore detection errors
+        }
       }
 
-      // sample kecil untuk performa
-      const sample = document.createElement("canvas");
-      const sw = Math.min(320, v.videoWidth);
-      const sh = Math.round((sw / v.videoWidth) * v.videoHeight);
-      sample.width = sw;
-      sample.height = sh;
-      const sctx = sample.getContext("2d", { willReadFrequently: true });
-      if (!sctx) {
-        detectLoopRef.current = requestAnimationFrame(runDetect);
-        return;
-      }
-      sctx.drawImage(v, 0, 0, sw, sh);
-      const id = sctx.getImageData(0, 0, sw, sh);
-      const bounds = detectDocumentBounds(id, sw, sh);
-
-      const isFull =
-        bounds.x === 0 &&
-        bounds.y === 0 &&
-        bounds.width === sw &&
-        bounds.height === sh;
-      setDocDetected(!isFull);
-
-      const scaleX = overlay.width / sw;
-      const scaleY = overlay.height / sh;
-
-      ctx.clearRect(0, 0, overlay.width, overlay.height);
-
-      // dim outside document
-      if (!isFull) {
-        ctx.fillStyle = "rgba(0,0,0,0.35)";
-        ctx.fillRect(0, 0, overlay.width, overlay.height);
-        ctx.clearRect(
-          bounds.x * scaleX,
-          bounds.y * scaleY,
-          bounds.width * scaleX,
-          bounds.height * scaleY
-        );
-      }
-
-      // outline
-      ctx.strokeStyle = isFull ? "rgba(148,163,184,0.6)" : "#22c55e";
-      ctx.lineWidth = 2.5;
-      ctx.setLineDash(isFull ? [6, 4] : []);
-      ctx.strokeRect(
-        bounds.x * scaleX + 1,
-        bounds.y * scaleY + 1,
-        bounds.width * scaleX - 2,
-        bounds.height * scaleY - 2
-      );
-
-      // corner markers
-      if (!isFull) {
-        const cx = bounds.x * scaleX;
-        const cy = bounds.y * scaleY;
-        const cw = bounds.width * scaleX;
-        const ch = bounds.height * scaleY;
-        const len = 18;
-        ctx.strokeStyle = "#22c55e";
-        ctx.lineWidth = 3;
-        ctx.setLineDash([]);
-        // TL
-        ctx.beginPath();
-        ctx.moveTo(cx, cy + len);
-        ctx.lineTo(cx, cy);
-        ctx.lineTo(cx + len, cy);
-        ctx.stroke();
-        // TR
-        ctx.beginPath();
-        ctx.moveTo(cx + cw - len, cy);
-        ctx.lineTo(cx + cw, cy);
-        ctx.lineTo(cx + cw, cy + len);
-        ctx.stroke();
-        // BL
-        ctx.beginPath();
-        ctx.moveTo(cx, cy + ch - len);
-        ctx.lineTo(cx, cy + ch);
-        ctx.lineTo(cx + len, cy + ch);
-        ctx.stroke();
-        // BR
-        ctx.beginPath();
-        ctx.moveTo(cx + cw - len, cy + ch);
-        ctx.lineTo(cx + cw, cy + ch);
-        ctx.lineTo(cx + cw, cy + ch - len);
-        ctx.stroke();
-      }
-
-      detectLoopRef.current = requestAnimationFrame(runDetect);
+      detectLoopRef.current = requestAnimationFrame(tick);
     };
 
-    detectLoopRef.current = requestAnimationFrame(runDetect);
-
+    detectLoopRef.current = requestAnimationFrame(tick);
     return () => stopDetectLoop();
   }, [cameraOpen, stopDetectLoop]);
 
-  // Body scroll lock
   useEffect(() => {
     const anyModal = cameraOpen || pdfPreviewOpen;
     document.body.style.overflow = anyModal ? "hidden" : "";
@@ -577,13 +486,14 @@ export default function TambahArsipPage() {
       streamRef.current = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: "environment" },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
         },
         audio: false,
       });
       setCameraOpen(true);
       setError("");
+      setCaptureMessage("");
     } catch (cameraError: unknown) {
       setError(
         cameraError instanceof Error
@@ -597,53 +507,71 @@ export default function TambahArsipPage() {
     stopStream();
     setCameraOpen(false);
     setDocDetected(false);
+    setCaptureMessage("");
   };
 
-  const captureCameraPage = async () => {
+  const captureCameraPage = () => {
     const video = videoRef.current;
-    if (!video?.videoWidth || capturing) return;
-    setCapturing(true);
-    try {
-      const { originalDataUrl, previewDataUrl } = await processCaptureFrame(
-        video,
-        activeFilter
-      );
-      const page: ScanPage = {
-        id: `page-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        originalDataUrl,
-        filter: activeFilter,
-        previewDataUrl,
-      };
-      setScanPages((prev) => [...prev, page]);
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Gagal mengambil halaman."
-      );
-    } finally {
-      setCapturing(false);
+    if (!video) {
+      setCaptureMessage("Video kamera belum siap.");
+      return;
     }
+    if (!video.videoWidth) {
+      setCaptureMessage("Tunggu kamera aktif, lalu coba lagi.");
+      return;
+    }
+    if (capturing) return;
+
+    setCapturing(true);
+    setCaptureMessage("");
+
+    // defer agar UI sempat update (spinner)
+    requestAnimationFrame(() => {
+      try {
+        const { originalDataUrl, previewDataUrl } = processCaptureFrame(
+          video,
+          activeFilter
+        );
+        const page: ScanPage = {
+          id: `page-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          originalDataUrl,
+          filter: activeFilter,
+          previewDataUrl,
+        };
+        setScanPages((prev) => [...prev, page]);
+        setCaptureMessage(`Halaman ${scanPages.length + 1} berhasil diambil`);
+        setTimeout(() => setCaptureMessage(""), 2000);
+      } catch (err) {
+        const msg =
+          err instanceof Error ? err.message : "Gagal mengambil halaman.";
+        setCaptureMessage(msg);
+        setError(msg);
+      } finally {
+        setCapturing(false);
+      }
+    });
   };
 
   const removeScanPage = (id: string) => {
     setScanPages((prev) => prev.filter((p) => p.id !== id));
   };
 
-  const changePageFilter = async (id: string, filter: ScanFilter) => {
+  const changePageFilter = (id: string, filter: ScanFilter) => {
     setScanPages((prev) =>
       prev.map((p) => (p.id === id ? { ...p, filter } : p))
     );
+
     const page = scanPages.find((p) => p.id === id);
-    if (!page) return;
-    try {
-      const previewDataUrl = await reapplyFilter(page.originalDataUrl, filter);
+    const original = page?.originalDataUrl;
+    if (!original) return;
+
+    void reapplyFilter(original, filter).then((previewDataUrl) => {
       setScanPages((prev) =>
         prev.map((p) =>
           p.id === id ? { ...p, filter, previewDataUrl } : p
         )
       );
-    } catch {
-      // keep previous preview
-    }
+    });
   };
 
   const revokePdfPreview = useCallback(() => {
@@ -659,12 +587,14 @@ export default function TambahArsipPage() {
     pageCount: number;
   }> => {
     if (!scanPages.length) throw new Error("Belum ada halaman scan.");
-    const pdf = new jsPDF({ unit: "mm", format: "a4" });
+
+    const pdf = new jsPDF({ unit: "mm", format: "a4", compress: true });
     const pageW = 210;
     const pageH = 297;
     const margin = 8;
 
-    for (const [index, page] of scanPages.entries()) {
+    for (let index = 0; index < scanPages.length; index++) {
+      const page = scanPages[index];
       const img = await loadImage(page.previewDataUrl);
       const maxW = pageW - margin * 2;
       const maxH = pageH - margin * 2;
@@ -674,18 +604,32 @@ export default function TambahArsipPage() {
       const x = (pageW - drawW) / 2;
       const y = (pageH - drawH) / 2;
       if (index > 0) pdf.addPage();
-      pdf.addImage(page.previewDataUrl, "JPEG", x, y, drawW, drawH);
+      // 'FAST' = kompresi internal jsPDF
+      pdf.addImage(
+        page.previewDataUrl,
+        "JPEG",
+        x,
+        y,
+        drawW,
+        drawH,
+        undefined,
+        "FAST"
+      );
     }
 
     const arrayBuffer = pdf.output("arraybuffer");
     const blob = new Blob([arrayBuffer], { type: "application/pdf" });
-    const fileName = `scan-${Date.now()}.pdf`;
-    return { blob, fileName, pageCount: scanPages.length };
+    return {
+      blob,
+      fileName: `scan-${Date.now()}.pdf`,
+      pageCount: scanPages.length,
+    };
   };
 
   const makeScanPdf = async () => {
     if (!scanPages.length || buildingPdf) return;
     setBuildingPdf(true);
+    setCaptureMessage("");
     try {
       const { blob, fileName, pageCount } = await buildPdfBlob();
       revokePdfPreview();
@@ -699,9 +643,7 @@ export default function TambahArsipPage() {
       });
       setPdfPreviewOpen(true);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Gagal membuat PDF."
-      );
+      setError(err instanceof Error ? err.message : "Gagal membuat PDF.");
     } finally {
       setBuildingPdf(false);
     }
@@ -745,7 +687,6 @@ export default function TambahArsipPage() {
 
   const backToEditScanner = () => {
     setPdfPreviewOpen(false);
-    // kamera tetap terbuka, halaman scan tetap ada
   };
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -784,13 +725,11 @@ export default function TambahArsipPage() {
         method: "POST",
         body: formData,
       });
-
       const result = await response.json();
 
       if (!response.ok || !result.success) {
         throw new Error(result.message || "Gagal menyimpan arsip.");
       }
-
       router.push("/arsip");
     } catch (err) {
       console.error(err);
@@ -837,16 +776,23 @@ export default function TambahArsipPage() {
     );
   }
 
-  const filterBtnClass = (f: ScanFilter, current: ScanFilter) =>
-    `rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-      current === f
-        ? "bg-blue-600 text-white"
-        : "bg-slate-700 text-slate-300 hover:bg-slate-600"
-    }`;
+  const filterChip = (f: ScanFilter, current: ScanFilter, onClick: () => void) => (
+    <button
+      key={f}
+      type="button"
+      onClick={onClick}
+      className={`rounded-lg px-3 py-1.5 text-xs font-bold uppercase tracking-wide transition ${
+        current === f
+          ? "bg-blue-600 text-white shadow"
+          : "bg-slate-700 text-slate-300 hover:bg-slate-600"
+      }`}
+    >
+      {f === "color" ? "Color" : f === "gray" ? "Gray" : "B&W"}
+    </button>
+  );
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      {/* HEADER */}
       <section>
         <Link
           href="/arsip"
@@ -874,7 +820,6 @@ export default function TambahArsipPage() {
           </div>
         )}
 
-        {/* INFORMASI SURAT */}
         <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-200 p-5">
             <div className="flex items-center gap-3">
@@ -995,7 +940,6 @@ export default function TambahArsipPage() {
           </div>
         </section>
 
-        {/* UPLOAD */}
         <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-200 p-5">
             <div className="flex items-center gap-3">
@@ -1014,27 +958,24 @@ export default function TambahArsipPage() {
           <div className="p-5">
             {!file ? (
               <div
-                onDragEnter={(event) => {
-                  event.preventDefault();
+                onDragEnter={(e) => {
+                  e.preventDefault();
                   setDragActive(true);
                 }}
-                onDragOver={(event) => {
-                  event.preventDefault();
+                onDragOver={(e) => {
+                  e.preventDefault();
                   setDragActive(true);
                 }}
-                onDragLeave={(event) => {
-                  event.preventDefault();
+                onDragLeave={(e) => {
+                  e.preventDefault();
                   setDragActive(false);
                 }}
                 onDrop={handleDrop}
-                className={`
-                  rounded-2xl border-2 border-dashed p-8 text-center transition md:p-12
-                  ${
-                    dragActive
-                      ? "border-blue-500 bg-blue-50"
-                      : "border-slate-200 bg-slate-50 hover:border-blue-300 hover:bg-blue-50/50"
-                  }
-                `}
+                className={`rounded-2xl border-2 border-dashed p-8 text-center transition md:p-12 ${
+                  dragActive
+                    ? "border-blue-500 bg-blue-50"
+                    : "border-slate-200 bg-slate-50 hover:border-blue-300 hover:bg-blue-50/50"
+                }`}
               >
                 <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-white shadow-sm">
                   <Upload size={25} className="text-blue-600" />
@@ -1096,7 +1037,6 @@ export default function TambahArsipPage() {
           </div>
         </section>
 
-        {/* ACTION */}
         <section className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
           <Link
             href="/arsip"
@@ -1115,29 +1055,25 @@ export default function TambahArsipPage() {
         </section>
       </form>
 
-      {/* ========== MODAL SCANNER ========== */}
+      {/* MODAL SCANNER */}
       {cameraOpen && (
         <div
           className="fixed inset-0 z-[100] flex items-center justify-center bg-black/85 p-2 sm:p-4"
           onClick={(e) => {
-            if (e.target === e.currentTarget && !pdfPreviewOpen) {
-              closeCamera();
-            }
+            if (e.target === e.currentTarget && !pdfPreviewOpen) closeCamera();
           }}
           role="dialog"
           aria-modal="true"
-          aria-label="Scan dokumen dengan kamera"
         >
           <div
             className="relative flex max-h-[96vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-slate-900 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Header */}
             <div className="flex shrink-0 items-center justify-between border-b border-slate-700 px-4 py-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <Camera size={20} className="shrink-0 text-blue-400" />
-                  <h3 className="truncate text-sm font-semibold text-white sm:text-base">
+                  <h3 className="text-sm font-semibold text-white sm:text-base">
                     Scan Dokumen
                   </h3>
                   {scanPages.length > 0 && (
@@ -1147,20 +1083,19 @@ export default function TambahArsipPage() {
                   )}
                 </div>
                 <p className="mt-0.5 text-xs text-slate-400">
-                  Arahkan kamera ke kertas · auto crop & filter
+                  Arahkan kamera ke kertas · auto crop
                 </p>
               </div>
               <button
                 type="button"
                 onClick={closeCamera}
-                className="rounded-lg p-2 text-slate-400 transition hover:bg-slate-800 hover:text-white"
-                aria-label="Tutup kamera"
+                className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white"
+                aria-label="Tutup"
               >
                 <X size={22} />
               </button>
             </div>
 
-            {/* Camera area */}
             <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
               <div className="relative aspect-[3/4] w-full bg-black sm:aspect-video">
                 <video
@@ -1190,49 +1125,49 @@ export default function TambahArsipPage() {
                     {docDetected ? "Dokumen terdeteksi" : "Cari dokumen…"}
                   </span>
                 </div>
+                {captureMessage && (
+                  <div className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-3 py-1.5 text-xs text-white">
+                    {captureMessage}
+                  </div>
+                )}
               </div>
 
-              {/* Filter default untuk capture berikutnya */}
-              <div className="flex flex-wrap items-center justify-center gap-2 border-t border-slate-700 bg-slate-800/80 px-3 py-2">
-                <span className="text-xs text-slate-400">Filter baru:</span>
-                {(["color", "gray", "bw"] as ScanFilter[]).map((f) => (
-                  <button
-                    key={f}
-                    type="button"
-                    onClick={() => setActiveFilter(f)}
-                    className={filterBtnClass(f, activeFilter)}
-                  >
-                    {f === "color" ? "COLOR" : f === "gray" ? "GRAY" : "B&W"}
-                  </button>
-                ))}
+              {/* FILTER — selalu terlihat */}
+              <div className="flex flex-wrap items-center justify-center gap-2 border-t border-slate-700 bg-slate-800 px-3 py-3">
+                <span className="w-full text-center text-xs font-medium text-slate-400 sm:w-auto sm:text-left">
+                  Filter halaman baru:
+                </span>
+                {(["color", "gray", "bw"] as ScanFilter[]).map((f) =>
+                  filterChip(f, activeFilter, () => setActiveFilter(f))
+                )}
               </div>
 
-              {/* Thumbnails multi-page */}
+              {/* THUMBNAIL + filter per halaman */}
               {scanPages.length > 0 && (
-                <div className="border-t border-slate-700 bg-slate-800/50 px-3 py-3">
+                <div className="border-t border-slate-700 bg-slate-800/60 px-3 py-3">
                   <p className="mb-2 text-xs font-medium text-slate-400">
-                    Halaman hasil scan
+                    Preview halaman ({scanPages.length})
                   </p>
                   <div className="flex gap-3 overflow-x-auto pb-1">
                     {scanPages.map((page, index) => (
                       <div
                         key={page.id}
-                        className="relative w-[88px] shrink-0 sm:w-[100px]"
+                        className="w-[100px] shrink-0 sm:w-[110px]"
                       >
-                        <div className="relative overflow-hidden rounded-lg border border-slate-600 bg-slate-950">
+                        <div className="relative overflow-hidden rounded-lg border border-slate-600 bg-black">
                           <Image
                             src={page.previewDataUrl}
                             alt={`Halaman ${index + 1}`}
-                            width={100}
-                            height={130}
+                            width={110}
+                            height={140}
                             unoptimized
                             className="aspect-[3/4] w-full object-cover"
                           />
                           <button
                             type="button"
                             onClick={() => removeScanPage(page.id)}
-                            className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-xs font-bold text-white shadow hover:bg-red-500"
-                            aria-label={`Hapus halaman ${index + 1}`}
+                            className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-xs font-bold text-white"
+                            aria-label={`Hapus ${index + 1}`}
                           >
                             ×
                           </button>
@@ -1240,14 +1175,14 @@ export default function TambahArsipPage() {
                             {index + 1}
                           </span>
                         </div>
-                        <div className="mt-1.5 flex flex-wrap justify-center gap-0.5">
+                        <div className="mt-1.5 flex justify-center gap-1">
                           {(["color", "gray", "bw"] as ScanFilter[]).map(
                             (f) => (
                               <button
                                 key={f}
                                 type="button"
                                 onClick={() => changePageFilter(page.id, f)}
-                                className={`rounded px-1 py-0.5 text-[9px] font-bold ${
+                                className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
                                   page.filter === f
                                     ? "bg-blue-600 text-white"
                                     : "bg-slate-700 text-slate-400"
@@ -1269,13 +1204,12 @@ export default function TambahArsipPage() {
               )}
             </div>
 
-            {/* Footer controls */}
-            <div className="flex shrink-0 flex-wrap items-center justify-center gap-2 border-t border-slate-700 bg-slate-900 px-3 py-3 sm:gap-3 sm:px-5">
+            <div className="flex shrink-0 flex-wrap items-center justify-center gap-2 border-t border-slate-700 bg-slate-900 px-3 py-3 sm:gap-3">
               <button
                 type="button"
                 onClick={captureCameraPage}
                 disabled={capturing}
-                className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50 active:scale-[0.98]"
+                className="inline-flex min-w-[140px] items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
               >
                 {capturing ? (
                   <Loader2 size={16} className="animate-spin" />
@@ -1289,7 +1223,7 @@ export default function TambahArsipPage() {
                 type="button"
                 onClick={makeScanPdf}
                 disabled={!scanPages.length || buildingPdf}
-                className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40 active:scale-[0.98]"
+                className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {buildingPdf ? (
                   <Loader2 size={16} className="animate-spin" />
@@ -1302,7 +1236,7 @@ export default function TambahArsipPage() {
               <button
                 type="button"
                 onClick={closeCamera}
-                className="inline-flex items-center gap-2 rounded-xl border border-slate-600 bg-slate-800 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:bg-slate-700 active:scale-[0.98]"
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-600 bg-slate-800 px-4 py-2.5 text-sm font-semibold text-slate-200 hover:bg-slate-700"
               >
                 Tutup Kamera
               </button>
@@ -1311,18 +1245,17 @@ export default function TambahArsipPage() {
         </div>
       )}
 
-      {/* ========== MODAL PREVIEW PDF ========== */}
+      {/* MODAL PREVIEW PDF */}
       {pdfPreviewOpen && pdfPreview && (
         <div
           className="fixed inset-0 z-[110] flex items-center justify-center bg-black/90 p-2 sm:p-4"
           role="dialog"
           aria-modal="true"
-          aria-label="Preview PDF hasil scan"
         >
           <div className="relative flex max-h-[96vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-slate-900 shadow-2xl">
             <div className="flex shrink-0 items-center justify-between border-b border-slate-700 px-4 py-3">
               <div className="min-w-0">
-                <h3 className="truncate text-sm font-semibold text-white sm:text-base">
+                <h3 className="text-sm font-semibold text-white sm:text-base">
                   Preview PDF
                 </h3>
                 <p className="mt-0.5 truncate text-xs text-slate-400">
@@ -1333,8 +1266,7 @@ export default function TambahArsipPage() {
               <button
                 type="button"
                 onClick={backToEditScanner}
-                className="rounded-lg p-2 text-slate-400 transition hover:bg-slate-800 hover:text-white"
-                aria-label="Tutup preview"
+                className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white"
               >
                 <X size={22} />
               </button>
@@ -1342,27 +1274,26 @@ export default function TambahArsipPage() {
 
             <div className="min-h-0 flex-1 bg-slate-950">
               <iframe
-                src={pdfPreview.url}
-                title="Preview PDF scan"
-                className="h-[55vh] w-full border-0 sm:h-[60vh]"
+                src={`${pdfPreview.url}#view=FitH`}
+                title="Preview PDF"
+                className="h-[55vh] w-full border-0 sm:h-[62vh]"
               />
             </div>
 
-            <div className="flex shrink-0 flex-wrap items-center justify-center gap-2 border-t border-slate-700 bg-slate-900 px-3 py-3 sm:gap-3 sm:px-5">
+            <div className="flex shrink-0 flex-wrap items-center justify-center gap-2 border-t border-slate-700 bg-slate-900 px-3 py-3 sm:gap-3">
               <button
                 type="button"
                 onClick={backToEditScanner}
-                className="inline-flex items-center gap-2 rounded-xl border border-slate-600 bg-slate-800 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:bg-slate-700"
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-600 bg-slate-800 px-4 py-2.5 text-sm font-semibold text-slate-200 hover:bg-slate-700"
               >
                 <ArrowLeft size={16} />
                 Kembali Edit
               </button>
-
               <button
                 type="button"
                 onClick={rebuildPdf}
                 disabled={buildingPdf}
-                className="inline-flex items-center gap-2 rounded-xl border border-slate-600 bg-slate-800 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:bg-slate-700 disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-600 bg-slate-800 px-4 py-2.5 text-sm font-semibold text-slate-200 hover:bg-slate-700 disabled:opacity-50"
               >
                 {buildingPdf ? (
                   <Loader2 size={16} className="animate-spin" />
@@ -1371,11 +1302,10 @@ export default function TambahArsipPage() {
                 )}
                 Buat Ulang
               </button>
-
               <button
                 type="button"
                 onClick={confirmUsePdf}
-                className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-500"
+                className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-500"
               >
                 <Check size={16} />
                 Gunakan PDF Ini
@@ -1397,12 +1327,10 @@ export default function TambahArsipPage() {
           color: rgb(51 65 85);
           outline: none;
         }
-
         .input:focus {
           border-color: rgb(59 130 246);
           box-shadow: 0 0 0 3px rgb(219 234 254);
         }
-
         textarea.input {
           height: auto;
         }
