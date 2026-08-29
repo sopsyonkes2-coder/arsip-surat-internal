@@ -466,34 +466,47 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
   }, []);
 
   const buildPdf = async () => {
-    if (!scanPages.length) throw new Error("Belum ada halaman");
-    const pdf = new jsPDF({ unit: "mm", format: "a4", compress: true });
-    for (let i = 0; i < scanPages.length; i++) {
-      const img = await loadImage(scanPages[i].previewDataUrl);
-      const ratio = Math.min(194 / img.width, 281 / img.height);
-      const dw = img.width * ratio;
-      const dh = img.height * ratio;
-      if (i) pdf.addPage();
-      pdf.addImage(
-        scanPages[i].previewDataUrl,
-        "JPEG",
-        (210 - dw) / 2,
-        (297 - dh) / 2,
-        dw,
-        dh,
-        undefined,
-        "FAST"
-      );
+  if (!scanPages.length) throw new Error("Belum ada halaman");
+
+  const pdf = new jsPDF({
+    unit: "mm",
+    format: "a4",
+    compress: true,
+  });
+
+  const A4_WIDTH = 210;
+  const A4_HEIGHT = 297;
+
+  for (let i = 0; i < scanPages.length; i++) {
+    const page = scanPages[i];
+
+    if (i > 0) {
+      pdf.addPage("a4", "portrait");
     }
-    const blob = new Blob([pdf.output("arraybuffer")], {
-      type: "application/pdf",
-    });
-    return {
-      blob,
-      fileName: `scan-${Date.now()}.pdf`,
-      pageCount: scanPages.length,
-    };
+
+    // Gambar memenuhi seluruh halaman A4
+    pdf.addImage(
+      page.previewDataUrl,
+      "JPEG",
+      0,
+      0,
+      A4_WIDTH,
+      A4_HEIGHT,
+      undefined,
+      "FAST"
+    );
+  }
+
+  const blob = new Blob([pdf.output("arraybuffer")], {
+    type: "application/pdf",
+  });
+
+  return {
+    blob,
+    fileName: `scan-${Date.now()}.pdf`,
+    pageCount: scanPages.length,
   };
+};
 
   const makeScanPdf = async () => {
     if (!scanPages.length || buildingPdf) return;
