@@ -694,7 +694,7 @@ export default function DashboardPage() {
 
               <div className="mt-4 flex items-center gap-1 text-xs font-medium text-emerald-600">
                 <TrendingUp size={14} />
-                Data Google Sheets
+                Data Terupdate
               </div>
 
             </div>
