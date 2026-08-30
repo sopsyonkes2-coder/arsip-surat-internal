@@ -59,9 +59,6 @@ function createOAuthClient() {
 |--------------------------------------------------------------------------
 | GET GOOGLE AUTH FROM COOKIE
 |--------------------------------------------------------------------------
-|
-| Membaca access token / refresh token dari cookie.
-|
 */
 
 async function getAuthenticatedClient(
@@ -87,24 +84,29 @@ async function getAuthenticatedClient(
     !refreshToken
   ) {
     try {
-      const oauthServices = getOAuthServices();
+      const oauthServices =
+        getOAuthServices();
+
       return {
         auth: oauthServices.auth,
-        credentials: oauthServices.auth.credentials,
+        credentials:
+          oauthServices.auth.credentials,
         refreshed: false,
       };
     } catch {
-      const serviceAccount = getGoogleServices();
-      return { auth: serviceAccount.auth, credentials: {}, refreshed: false };
+      const serviceAccount =
+        getGoogleServices();
+
+      return {
+        auth: serviceAccount.auth,
+        credentials: {},
+        refreshed: false,
+      };
     }
   }
 
   const oauth2Client =
     createOAuthClient();
-
-  /*
-   * Set access token jika tersedia.
-   */
 
   if (accessToken) {
     oauth2Client.setCredentials({
@@ -116,20 +118,10 @@ async function getAuthenticatedClient(
         : undefined,
     });
   } else if (refreshToken) {
-    /*
-     * Jika access token sudah tidak ada,
-     * gunakan refresh token.
-     */
-
     oauth2Client.setCredentials({
       refresh_token: refreshToken,
     });
   }
-
-  /*
-   * Jika access token hampir habis / sudah expired,
-   * refresh menggunakan refresh token.
-   */
 
   const expiry =
     tokenExpiry
@@ -245,7 +237,11 @@ function applyAuthCookies(
 */
 
 function createGoogleServices(
-  auth: OAuth2Client | ReturnType<typeof getGoogleServices>["auth"]
+  auth:
+    | OAuth2Client
+    | ReturnType<
+        typeof getGoogleServices
+      >["auth"]
 ) {
   const drive = google.drive({
     version: "v3",
@@ -267,28 +263,17 @@ function createGoogleServices(
 |--------------------------------------------------------------------------
 | GET
 |--------------------------------------------------------------------------
-|
-| Mengambil seluruh arsip dari Google Sheets.
-|
 */
 
 export async function GET(
   request: NextRequest
 ) {
   try {
-    /*
-     * Cek spreadsheet.
-     */
-
     if (!GOOGLE_SPREADSHEET_ID) {
       throw new Error(
         "GOOGLE_SPREADSHEET_ID belum dikonfigurasi."
       );
     }
-
-    /*
-     * OAuth authentication.
-     */
 
     const {
       auth,
@@ -301,10 +286,6 @@ export async function GET(
 
     const { sheets } =
       createGoogleServices(auth);
-
-    /*
-     * Ambil data Google Sheets.
-     */
 
     const response =
       await sheets.spreadsheets.values.get(
@@ -319,10 +300,6 @@ export async function GET(
 
     const rows =
       response.data.values || [];
-
-    /*
-     * Jika hanya header / kosong.
-     */
 
     if (rows.length <= 1) {
       const result =
@@ -341,10 +318,6 @@ export async function GET(
       return result;
     }
 
-    /*
-     * Mapping data.
-     */
-
     const data = rows
       .slice(1)
       .map((row) => ({
@@ -359,8 +332,10 @@ export async function GET(
         perihal: row[7] || "",
         klasifikasi: row[8] || "",
         linkFile: row[9] || "",
-        jenisSurat: row[10] || "Masuk",
-        keterangan: row[11] || "",
+        jenisSurat:
+          row[10] || "Masuk",
+        keterangan:
+          row[11] || "",
       }))
       .filter(
         (item) =>
@@ -374,11 +349,6 @@ export async function GET(
         success: true,
         data,
       });
-
-    /*
-     * Jika token diperbarui,
-     * simpan token baru.
-     */
 
     if (refreshed) {
       applyAuthCookies(
@@ -398,10 +368,6 @@ export async function GET(
       error instanceof Error
         ? error.message
         : "Gagal mengambil data arsip.";
-
-    /*
-     * Jika OAuth belum login.
-     */
 
     if (
       message.includes(
@@ -436,34 +402,59 @@ export async function GET(
 |--------------------------------------------------------------------------
 | POST
 |--------------------------------------------------------------------------
-|
-| Menerima FormData:
-|
-| nomorAgenda
-| nomorSurat
-| tanggalSurat
-| tanggalDiterima
-| pengirim
-| perihal
-| klasifikasi
-| file
-|
-|--------------------------------------------------------------------------
 */
 
 export async function POST(
   request: NextRequest
 ) {
   try {
-    const session = readSession(request.cookies.get(sessionCookieName)?.value);
-    const hasGoogleSession = Boolean(request.cookies.get("google_access_token")?.value || request.cookies.get("google_refresh_token")?.value);
-    if (!session && !hasGoogleSession) return NextResponse.json({ success: false, message: "Sesi tidak valid." }, { status: 401 });
-    if (session?.role === "Tamu") return NextResponse.json({ success: false, message: "Akses ditolak. Hanya Admin yang dapat menambah arsip." }, { status: 403 });
-    /*
-     * --------------------------------------------------
-     * CEK CONFIG
-     * --------------------------------------------------
-     */
+    const session =
+      readSession(
+        request.cookies.get(
+          sessionCookieName
+        )?.value
+      );
+
+    const hasGoogleSession =
+      Boolean(
+        request.cookies.get(
+          "google_access_token"
+        )?.value ||
+        request.cookies.get(
+          "google_refresh_token"
+        )?.value
+      );
+
+    if (
+      !session &&
+      !hasGoogleSession
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Sesi tidak valid.",
+        },
+        {
+          status: 401,
+        }
+      );
+    }
+
+    if (
+      session?.role === "Tamu"
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Akses ditolak. Hanya Admin yang dapat menambah arsip.",
+        },
+        {
+          status: 403,
+        }
+      );
+    }
 
     if (!GOOGLE_SPREADSHEET_ID) {
       throw new Error(
@@ -476,12 +467,6 @@ export async function POST(
         "GOOGLE_DRIVE_FOLDER_ID belum dikonfigurasi."
       );
     }
-
-    /*
-     * --------------------------------------------------
-     * AMBIL FORM DATA
-     * --------------------------------------------------
-     */
 
     const formData =
       await request.formData();
@@ -535,17 +520,22 @@ export async function POST(
         ) || ""
       ).trim();
 
-    const jenisSurat = String(formData.get("jenisSurat") || "Masuk").trim();
-    const keterangan = String(formData.get("keterangan") || "").trim();
+    const jenisSurat =
+      String(
+        formData.get(
+          "jenisSurat"
+        ) || "Masuk"
+      ).trim();
+
+    const keterangan =
+      String(
+        formData.get(
+          "keterangan"
+        ) || ""
+      ).trim();
 
     const file =
       formData.get("file");
-
-    /*
-     * --------------------------------------------------
-     * VALIDASI DATA
-     * --------------------------------------------------
-     */
 
     if (
       !nomorAgenda ||
@@ -567,12 +557,6 @@ export async function POST(
         }
       );
     }
-
-    /*
-     * --------------------------------------------------
-     * VALIDASI FILE
-     * --------------------------------------------------
-     */
 
     if (!(file instanceof File)) {
       return NextResponse.json(
@@ -603,10 +587,6 @@ export async function POST(
       );
     }
 
-    /*
-     * Maksimal 20 MB.
-     */
-
     const maxFileSize =
       20 * 1024 * 1024;
 
@@ -626,12 +606,6 @@ export async function POST(
       );
     }
 
-    /*
-     * --------------------------------------------------
-     * GOOGLE OAUTH
-     * --------------------------------------------------
-     */
-
     const {
       auth,
       credentials,
@@ -646,12 +620,6 @@ export async function POST(
       sheets,
     } =
       createGoogleServices(auth);
-
-    /*
-     * --------------------------------------------------
-     * NOMOR ARSIP OTOMATIS
-     * --------------------------------------------------
-     */
 
     const existingResponse =
       await sheets.spreadsheets.values.get(
@@ -696,12 +664,6 @@ export async function POST(
     const nomor =
       String(nextNumber);
 
-    /*
-     * --------------------------------------------------
-     * NAMA FILE
-     * --------------------------------------------------
-     */
-
     const safeFileName =
       file.name.replace(
         /[^a-zA-Z0-9._-]/g,
@@ -710,12 +672,6 @@ export async function POST(
 
     const fileName =
       `${nomor}_${safeFileName}`;
-
-    /*
-     * --------------------------------------------------
-     * FILE → BUFFER
-     * --------------------------------------------------
-     */
 
     const arrayBuffer =
       await file.arrayBuffer();
@@ -727,18 +683,6 @@ export async function POST(
 
     const stream =
       Readable.from(buffer);
-
-    /*
-     * --------------------------------------------------
-     * UPLOAD KE GOOGLE DRIVE
-     * --------------------------------------------------
-     *
-     * Upload menggunakan akun Google
-     * yang memberikan izin OAuth.
-     *
-     * BUKAN Service Account.
-     * --------------------------------------------------
-     */
 
     const uploadedFile =
       await drive.files.create({
@@ -773,44 +717,13 @@ export async function POST(
       );
     }
 
-    /*
-     * --------------------------------------------------
-     * BUAT LINK FILE
-     * --------------------------------------------------
-     */
-
     const linkFile =
       uploadedFile.data
         .webViewLink ||
       `https://drive.google.com/file/d/${fileId}/view`;
 
-    /*
-     * --------------------------------------------------
-     * TANGGAL INPUT
-     * --------------------------------------------------
-     */
-
     const tanggalInput =
       new Date().toISOString();
-
-    /*
-     * --------------------------------------------------
-     * SIMPAN KE GOOGLE SHEETS
-     * --------------------------------------------------
-     *
-     * A = NOMOR
-     * B = TANGGAL_INPUT
-     * C = NOMOR_AGENDA
-     * D = NOMOR_SURAT
-     * E = TANGGAL_SURAT
-     * F = TANGGAL_DITERIMA
-     * G = PENGIRIM
-     * H = PERIHAL
-     * I = KLASIFIKASI
-     * J = LINK_FILE
-     *
-     * --------------------------------------------------
-     */
 
     await sheets.spreadsheets.values.append(
       {
@@ -847,12 +760,6 @@ export async function POST(
       }
     );
 
-    /*
-     * --------------------------------------------------
-     * RESPONSE
-     * --------------------------------------------------
-     */
-
     const result =
       NextResponse.json({
         success: true,
@@ -876,11 +783,6 @@ export async function POST(
         },
       });
 
-    /*
-     * Jika token diperbarui,
-     * simpan token baru ke cookie.
-     */
-
     if (refreshed) {
       applyAuthCookies(
         result,
@@ -899,10 +801,6 @@ export async function POST(
       error instanceof Error
         ? error.message
         : "Gagal menyimpan arsip.";
-
-    /*
-     * OAuth belum login.
-     */
 
     if (
       message.includes(
@@ -933,47 +831,830 @@ export async function POST(
   }
 }
 
-export async function DELETE(request: NextRequest) {
+/*
+|--------------------------------------------------------------------------
+| PUT - EDIT ARSIP
+|--------------------------------------------------------------------------
+|
+| Edit data arsip yang sudah ada.
+|
+| NOMOR ARSIP TIDAK BERUBAH.
+|
+| PDF lama tetap dipertahankan jika
+| tidak ada file baru.
+|
+|--------------------------------------------------------------------------
+*/
+
+export async function PUT(
+  request: NextRequest
+) {
+  let uploadedNewFileId:
+    | string
+    | undefined;
+
   try {
-    const session = readSession(request.cookies.get(sessionCookieName)?.value);
-    const hasGoogleSession = Boolean(request.cookies.get("google_access_token")?.value || request.cookies.get("google_refresh_token")?.value);
-    if (!session && !hasGoogleSession) return NextResponse.json({ success: false, message: "Sesi tidak valid." }, { status: 401 });
-    if (session?.role === "Tamu") return NextResponse.json({ success: false, message: "Akses ditolak. Hanya Admin yang dapat menghapus arsip." }, { status: 403 });
-    if (!GOOGLE_SPREADSHEET_ID) throw new Error("GOOGLE_SPREADSHEET_ID belum dikonfigurasi.");
-    const archiveId = request.nextUrl.searchParams.get("id")?.trim();
-    if (!archiveId) return NextResponse.json({ success: false, message: "ID arsip wajib diisi." }, { status: 400 });
+    const session =
+      readSession(
+        request.cookies.get(
+          sessionCookieName
+        )?.value
+      );
 
-    const { auth, credentials, refreshed } = await getAuthenticatedClient(request);
-    const { drive, sheets } = createGoogleServices(auth);
-    const values = (await sheets.spreadsheets.values.get({ spreadsheetId: GOOGLE_SPREADSHEET_ID, range: `${SHEET_NAME}!A:L` })).data.values || [];
-    const rowIndex = values.findIndex((row, index) => index > 0 && String(row[0] || "") === archiveId);
-    if (rowIndex < 1) return NextResponse.json({ success: false, message: "Arsip tidak ditemukan." }, { status: 404 });
+    const hasGoogleSession =
+      Boolean(
+        request.cookies.get(
+          "google_access_token"
+        )?.value ||
+        request.cookies.get(
+          "google_refresh_token"
+        )?.value
+      );
 
-    const fileUrl = String(values[rowIndex][9] || "");
-    const fileId = fileUrl.match(/\/d\/([^/]+)/)?.[1] || fileUrl.match(/[?&]id=([^&]+)/)?.[1];
-    if (fileId) {
-      try {
-        await drive.files.delete({ fileId });
-      } catch (error) {
-        console.error("DELETE DRIVE FILE ERROR:", error);
+    if (
+      !session &&
+      !hasGoogleSession
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Sesi tidak valid.",
+        },
+        {
+          status: 401,
+        }
+      );
+    }
+
+    if (
+      session?.role === "Tamu"
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Akses ditolak. Tamu tidak dapat mengedit arsip.",
+        },
+        {
+          status: 403,
+        }
+      );
+    }
+
+    if (!GOOGLE_SPREADSHEET_ID) {
+      throw new Error(
+        "GOOGLE_SPREADSHEET_ID belum dikonfigurasi."
+      );
+    }
+
+    const formData =
+      await request.formData();
+
+    const nomor =
+      String(
+        formData.get("nomor") ||
+          ""
+      ).trim();
+
+    if (!nomor) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Nomor arsip wajib diisi.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const nomorAgenda =
+      String(
+        formData.get(
+          "nomorAgenda"
+        ) || ""
+      ).trim();
+
+    const nomorSurat =
+      String(
+        formData.get(
+          "nomorSurat"
+        ) || ""
+      ).trim();
+
+    const tanggalSurat =
+      String(
+        formData.get(
+          "tanggalSurat"
+        ) || ""
+      ).trim();
+
+    const tanggalDiterima =
+      String(
+        formData.get(
+          "tanggalDiterima"
+        ) || ""
+      ).trim();
+
+    const pengirim =
+      String(
+        formData.get(
+          "pengirim"
+        ) || ""
+      ).trim();
+
+    const perihal =
+      String(
+        formData.get(
+          "perihal"
+        ) || ""
+      ).trim();
+
+    const klasifikasi =
+      String(
+        formData.get(
+          "klasifikasi"
+        ) || ""
+      ).trim();
+
+    const jenisSurat =
+      String(
+        formData.get(
+          "jenisSurat"
+        ) || "Masuk"
+      ).trim();
+
+    const keterangan =
+      String(
+        formData.get(
+          "keterangan"
+        ) || ""
+      ).trim();
+
+    const newFile =
+      formData.get("file");
+
+    if (
+      !nomorAgenda ||
+      !nomorSurat ||
+      !tanggalSurat ||
+      !tanggalDiterima ||
+      !pengirim ||
+      !perihal ||
+      !klasifikasi
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Data surat belum lengkap.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    /*
+     * Ambil Google authentication.
+     */
+
+    const {
+      auth,
+      credentials,
+      refreshed,
+    } =
+      await getAuthenticatedClient(
+        request
+      );
+
+    const {
+      drive,
+      sheets,
+    } =
+      createGoogleServices(auth);
+
+    /*
+     * Ambil seluruh data.
+     */
+
+    const response =
+      await sheets.spreadsheets.values.get(
+        {
+          spreadsheetId:
+            GOOGLE_SPREADSHEET_ID,
+
+          range:
+            `${SHEET_NAME}!A:L`,
+        }
+      );
+
+    const rows =
+      response.data.values || [];
+
+    /*
+     * Cari berdasarkan NOMOR ARSIP.
+     */
+
+    const rowIndex =
+      rows.findIndex(
+        (row, index) =>
+          index > 0 &&
+          String(
+            row[0] || ""
+          ) === nomor
+      );
+
+    if (rowIndex < 1) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Arsip tidak ditemukan.",
+        },
+        {
+          status: 404,
+        }
+      );
+    }
+
+    /*
+     * Ambil data lama.
+     */
+
+    const oldRow =
+      rows[rowIndex];
+
+    const oldTanggalInput =
+      oldRow[1] || "";
+
+    const oldLinkFile =
+      oldRow[9] || "";
+
+    /*
+     * Secara default file lama
+     * tetap digunakan.
+     */
+
+    let linkFile =
+      oldLinkFile;
+
+    /*
+     * Jika user memilih PDF baru,
+     * upload PDF baru.
+     */
+
+    if (
+      newFile instanceof File &&
+      newFile.size > 0
+    ) {
+      if (
+        newFile.type !==
+        "application/pdf"
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            message:
+              "File harus berupa PDF.",
+          },
+          {
+            status: 400,
+          }
+        );
+      }
+
+      const maxFileSize =
+        20 * 1024 * 1024;
+
+      if (
+        newFile.size >
+        maxFileSize
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            message:
+              "Ukuran file maksimal 20 MB.",
+          },
+          {
+            status: 400,
+          }
+        );
+      }
+
+      if (!GOOGLE_DRIVE_FOLDER_ID) {
+        throw new Error(
+          "GOOGLE_DRIVE_FOLDER_ID belum dikonfigurasi."
+        );
+      }
+
+      const safeFileName =
+        newFile.name.replace(
+          /[^a-zA-Z0-9._-]/g,
+          "_"
+        );
+
+      const fileName =
+        `${nomor}_${safeFileName}`;
+
+      const arrayBuffer =
+        await newFile.arrayBuffer();
+
+      const buffer =
+        Buffer.from(
+          arrayBuffer
+        );
+
+      const stream =
+        Readable.from(buffer);
+
+      /*
+       * Upload file BARU terlebih dahulu.
+       *
+       * Ini penting supaya file lama
+       * tidak hilang jika upload gagal.
+       */
+
+      const uploadedFile =
+        await drive.files.create({
+          requestBody: {
+            name: fileName,
+
+            parents: [
+              GOOGLE_DRIVE_FOLDER_ID,
+            ],
+
+            mimeType:
+              "application/pdf",
+          },
+
+          media: {
+            mimeType:
+              "application/pdf",
+
+            body: stream,
+          },
+
+          fields:
+            "id,name,webViewLink,webContentLink",
+        });
+
+      uploadedNewFileId =
+        uploadedFile.data.id ||
+        undefined;
+
+      if (!uploadedNewFileId) {
+        throw new Error(
+          "PDF baru berhasil di-upload tetapi ID file tidak ditemukan."
+        );
+      }
+
+      linkFile =
+        uploadedFile.data
+          .webViewLink ||
+        `https://drive.google.com/file/d/${uploadedNewFileId}/view`;
+    }
+
+    /*
+     * Update HANYA baris arsip tersebut.
+     *
+     * Tidak menghapus sheet.
+     * Tidak membuat ulang data.
+     * Tidak mengubah nomor arsip.
+     */
+
+    const updatedRow = [
+      nomor,
+      oldTanggalInput,
+      nomorAgenda,
+      nomorSurat,
+      tanggalSurat,
+      tanggalDiterima,
+      pengirim,
+      perihal,
+      klasifikasi,
+      linkFile,
+      jenisSurat,
+      keterangan,
+    ];
+
+    await sheets.spreadsheets.values.update(
+      {
+        spreadsheetId:
+          GOOGLE_SPREADSHEET_ID,
+
+        range:
+          `${SHEET_NAME}!A${rowIndex + 1}:L${rowIndex + 1}`,
+
+        valueInputOption:
+          "USER_ENTERED",
+
+        requestBody: {
+          values: [
+            updatedRow,
+          ],
+        },
+      }
+    );
+
+    /*
+     * Setelah data Sheets berhasil
+     * diperbarui, file lama boleh dihapus
+     * jika memang user mengganti PDF.
+     */
+
+    if (
+      uploadedNewFileId &&
+      oldLinkFile
+    ) {
+      const oldFileId =
+        oldLinkFile.match(
+          /\/d\/([^/]+)/
+        )?.[1] ||
+        oldLinkFile.match(
+          /[?&]id=([^&]+)/
+        )?.[1];
+
+      if (
+        oldFileId &&
+        oldFileId !==
+          uploadedNewFileId
+      ) {
+        try {
+          await drive.files.delete({
+            fileId: oldFileId,
+          });
+        } catch (error) {
+          /*
+           * Jangan gagalkan proses edit
+           * hanya karena file lama gagal
+           * dihapus.
+           */
+
+          console.error(
+            "DELETE OLD DRIVE FILE ERROR:",
+            error
+          );
+        }
       }
     }
 
-    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId: GOOGLE_SPREADSHEET_ID, fields: "sheets(properties(sheetId,title))" });
-    const sheet = spreadsheet.data.sheets?.find((item) => item.properties?.title === SHEET_NAME);
-    const sheetId = sheet?.properties?.sheetId;
-    if (sheetId === undefined) throw new Error(`Sheet ${SHEET_NAME} tidak ditemukan.`);
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: GOOGLE_SPREADSHEET_ID,
-      requestBody: { requests: [{ deleteDimension: { range: { sheetId, dimension: "ROWS", startIndex: rowIndex, endIndex: rowIndex + 1 } } }] },
-    });
+    const result =
+      NextResponse.json({
+        success: true,
 
-    const response = NextResponse.json({ success: true, message: "Arsip berhasil dihapus." });
-    if (refreshed) applyAuthCookies(response, credentials);
+        message:
+          "Arsip berhasil diperbarui.",
+
+        data: {
+          nomor,
+          tanggalInput:
+            oldTanggalInput,
+          nomorAgenda,
+          nomorSurat,
+          tanggalSurat,
+          tanggalDiterima,
+          pengirim,
+          perihal,
+          klasifikasi,
+          linkFile,
+          jenisSurat,
+          keterangan,
+        },
+      });
+
+    if (refreshed) {
+      applyAuthCookies(
+        result,
+        credentials
+      );
+    }
+
+    return result;
+  } catch (error) {
+    /*
+     * Jika PDF baru sudah berhasil
+     * di-upload tetapi update Sheets
+     * gagal, hapus PDF baru agar tidak
+     * meninggalkan file yatim di Drive.
+     */
+
+    if (uploadedNewFileId) {
+      try {
+        const {
+          auth,
+        } =
+          await getAuthenticatedClient(
+            request
+          );
+
+        const { drive } =
+          createGoogleServices(auth);
+
+        await drive.files.delete({
+          fileId:
+            uploadedNewFileId,
+        });
+      } catch (cleanupError) {
+        console.error(
+          "CLEANUP NEW FILE ERROR:",
+          cleanupError
+        );
+      }
+    }
+
+    console.error(
+      "PUT /api/archives ERROR:",
+      error
+    );
+
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Gagal memperbarui arsip.";
+
+    if (
+      message.includes(
+        "belum terhubung"
+      )
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          message,
+          needGoogleAuth: true,
+        },
+        {
+          status: 401,
+        }
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: false,
+        message,
+      },
+      {
+        status: 500,
+      }
+    );
+  }
+}
+
+/*
+|--------------------------------------------------------------------------
+| DELETE
+|--------------------------------------------------------------------------
+*/
+
+export async function DELETE(
+  request: NextRequest
+) {
+  try {
+    const session =
+      readSession(
+        request.cookies.get(
+          sessionCookieName
+        )?.value
+      );
+
+    const hasGoogleSession =
+      Boolean(
+        request.cookies.get(
+          "google_access_token"
+        )?.value ||
+        request.cookies.get(
+          "google_refresh_token"
+        )?.value
+      );
+
+    if (
+      !session &&
+      !hasGoogleSession
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Sesi tidak valid.",
+        },
+        {
+          status: 401,
+        }
+      );
+    }
+
+    if (
+      session?.role === "Tamu"
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Akses ditolak. Hanya Admin yang dapat menghapus arsip.",
+        },
+        {
+          status: 403,
+        }
+      );
+    }
+
+    if (!GOOGLE_SPREADSHEET_ID) {
+      throw new Error(
+        "GOOGLE_SPREADSHEET_ID belum dikonfigurasi."
+      );
+    }
+
+    const archiveId =
+      request.nextUrl.searchParams
+        .get("id")
+        ?.trim();
+
+    if (!archiveId) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "ID arsip wajib diisi.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const {
+      auth,
+      credentials,
+      refreshed,
+    } =
+      await getAuthenticatedClient(
+        request
+      );
+
+    const {
+      drive,
+      sheets,
+    } =
+      createGoogleServices(auth);
+
+    const values =
+      (
+        await sheets.spreadsheets.values.get(
+          {
+            spreadsheetId:
+              GOOGLE_SPREADSHEET_ID,
+
+            range:
+              `${SHEET_NAME}!A:L`,
+          }
+        )
+      ).data.values || [];
+
+    const rowIndex =
+      values.findIndex(
+        (row, index) =>
+          index > 0 &&
+          String(
+            row[0] || ""
+          ) === archiveId
+      );
+
+    if (rowIndex < 1) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Arsip tidak ditemukan.",
+        },
+        {
+          status: 404,
+        }
+      );
+    }
+
+    const fileUrl =
+      String(
+        values[rowIndex][9] || ""
+      );
+
+    const fileId =
+      fileUrl.match(
+        /\/d\/([^/]+)/
+      )?.[1] ||
+      fileUrl.match(
+        /[?&]id=([^&]+)/
+      )?.[1];
+
+    if (fileId) {
+      try {
+        await drive.files.delete({
+          fileId,
+        });
+      } catch (error) {
+        console.error(
+          "DELETE DRIVE FILE ERROR:",
+          error
+        );
+      }
+    }
+
+    const spreadsheet =
+      await sheets.spreadsheets.get(
+        {
+          spreadsheetId:
+            GOOGLE_SPREADSHEET_ID,
+
+          fields:
+            "sheets(properties(sheetId,title))",
+        }
+      );
+
+    const sheet =
+      spreadsheet.data.sheets?.find(
+        (item) =>
+          item.properties?.title ===
+          SHEET_NAME
+      );
+
+    const sheetId =
+      sheet?.properties?.sheetId;
+
+    if (
+      sheetId === undefined
+    ) {
+      throw new Error(
+        `Sheet ${SHEET_NAME} tidak ditemukan.`
+      );
+    }
+
+    await sheets.spreadsheets.batchUpdate(
+      {
+        spreadsheetId:
+          GOOGLE_SPREADSHEET_ID,
+
+        requestBody: {
+          requests: [
+            {
+              deleteDimension: {
+                range: {
+                  sheetId,
+                  dimension: "ROWS",
+                  startIndex:
+                    rowIndex,
+                  endIndex:
+                    rowIndex + 1,
+                },
+              },
+            },
+          ],
+        },
+      }
+    );
+
+    const response =
+      NextResponse.json({
+        success: true,
+        message:
+          "Arsip berhasil dihapus.",
+      });
+
+    if (refreshed) {
+      applyAuthCookies(
+        response,
+        credentials
+      );
+    }
+
     return response;
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Gagal menghapus arsip.";
-    console.error("DELETE /api/archives ERROR:", error);
-    return NextResponse.json({ success: false, message }, { status: message.includes("belum terhubung") ? 401 : 500 });
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Gagal menghapus arsip.";
+
+    console.error(
+      "DELETE /api/archives ERROR:",
+      error
+    );
+
+    return NextResponse.json(
+      {
+        success: false,
+        message,
+      },
+      {
+        status:
+          message.includes(
+            "belum terhubung"
+          )
+            ? 401
+            : 500,
+      }
+    );
   }
 }

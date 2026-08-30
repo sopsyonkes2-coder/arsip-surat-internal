@@ -15,6 +15,7 @@ import {
   Mail,
   User,
   AlertCircle,
+  Pencil,
 } from "lucide-react";
 
 type ArchiveData = {
@@ -351,33 +352,41 @@ export default function ArchiveDetailPage() {
 
             {/* ACTION */}
 
-            <div className="flex flex-col gap-2 sm:flex-row lg:shrink-0">
+<div className="flex flex-col gap-2 sm:flex-row lg:shrink-0">
 
-              {hasFile && (
-                <>
-                  <a
-                    href={archive.linkFile}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
-                  >
-                    <FileText size={17} />
-                    Buka PDF
-                  </a>
+  <Link
+    href={`/arsip/${archive.nomor}/edit`}
+    className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+  >
+    <Pencil size={17} />
+    Edit Arsip
+  </Link>
 
-                  <a
-                    href={archive.linkFile}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-                  >
-                    <ExternalLink size={17} />
-                    Google Drive
-                  </a>
-                </>
-              )}
+  {hasFile && (
+    <>
+      <a
+        href={archive.linkFile}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
+      >
+        <FileText size={17} />
+        Buka PDF
+      </a>
 
-            </div>
+      <a
+        href={archive.linkFile}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+      >
+        <ExternalLink size={17} />
+        Google Drive
+      </a>
+    </>
+  )}
+
+</div>
 
           </div>
 
