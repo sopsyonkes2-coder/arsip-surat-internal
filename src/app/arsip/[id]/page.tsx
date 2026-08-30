@@ -29,6 +29,16 @@ type ArchiveData = {
   perihal: string;
   klasifikasi: string;
   linkFile: string;
+  jenisSurat?: string;
+  keterangan?: string;
+};
+
+type SessionData = {
+  username: string;
+  name: string;
+  nrp: string;
+  role: string;
+  expiresAt: number;
 };
 
 const months = [
@@ -140,11 +150,65 @@ export default function ArchiveDetailPage() {
   const [archive, setArchive] =
     useState<ArchiveData | null>(null);
 
+  const [session, setSession] =
+    useState<SessionData | null>(null);
+
   const [loading, setLoading] =
+    useState(true);
+
+  const [sessionLoading, setSessionLoading] =
     useState(true);
 
   const [error, setError] =
     useState("");
+
+  /*
+   * ============================================================
+   * LOAD SESSION
+   * ============================================================
+   */
+
+  useEffect(() => {
+    const loadSession = async () => {
+      try {
+        setSessionLoading(true);
+
+        const response = await fetch(
+          "/api/auth/session",
+          {
+            method: "GET",
+            cache: "no-store",
+          }
+        );
+
+        const result = await response.json();
+
+        if (!response.ok || !result.success) {
+          setSession(null);
+          return;
+        }
+
+        setSession(result.data);
+      } catch (err) {
+        console.error(
+          "SESSION LOAD ERROR:",
+          err
+        );
+
+        setSession(null);
+      } finally {
+        setSessionLoading(false);
+      }
+    };
+
+    loadSession();
+  }, []);
+
+  /*
+   * ============================================================
+   * LOAD ARCHIVE
+   * ============================================================
+   */
 
   useEffect(() => {
     if (!id) return;
@@ -178,7 +242,9 @@ export default function ArchiveDetailPage() {
           result.data || [];
 
         const decodedId =
-          decodeURIComponent(String(id));
+          decodeURIComponent(
+            String(id)
+          );
 
         const foundArchive =
           archives.find(
@@ -214,12 +280,32 @@ export default function ArchiveDetailPage() {
   }, [id]);
 
   /*
-   * =========================
-   * LOADING
-   * =========================
+   * ============================================================
+   * ROLE
+   * ============================================================
+   *
+   * HANYA ADMIN DAN OPERATOR YANG BOLEH EDIT.
+   *
+   * Tamu tidak mendapatkan tombol Edit Arsip.
+   *
    */
 
-  if (loading) {
+  const normalizedRole =
+    session?.role
+      ?.trim()
+      .toLowerCase() || "";
+
+  const canEdit =
+    normalizedRole === "admin" ||
+    normalizedRole === "operator";
+
+  /*
+   * ============================================================
+   * LOADING
+   * ============================================================
+   */
+
+  if (loading || sessionLoading) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
         <div className="flex flex-col items-center gap-3">
@@ -237,15 +323,14 @@ export default function ArchiveDetailPage() {
   }
 
   /*
-   * =========================
+   * ============================================================
    * ERROR
-   * =========================
+   * ============================================================
    */
 
   if (error || !archive) {
     return (
       <div className="mx-auto max-w-4xl">
-
         <div className="rounded-2xl border border-red-200 bg-red-50 p-6">
 
           <div className="flex items-start gap-3">
@@ -279,7 +364,6 @@ export default function ArchiveDetailPage() {
           </Link>
 
         </div>
-
       </div>
     );
   }
@@ -295,12 +379,11 @@ export default function ArchiveDetailPage() {
   return (
     <div className="mx-auto max-w-7xl space-y-6">
 
-      {/* =========================
-          BREADCRUMB / BACK
-      ========================= */}
+      {/* ======================================================
+          BACK
+      ====================================================== */}
 
       <section>
-
         <Link
           href="/arsip"
           className="inline-flex items-center gap-2 text-sm font-medium text-slate-500 transition hover:text-blue-600"
@@ -308,12 +391,11 @@ export default function ArchiveDetailPage() {
           <ArrowLeft size={17} />
           Kembali ke Arsip
         </Link>
-
       </section>
 
-      {/* =========================
+      {/* ======================================================
           HEADER
-      ========================= */}
+      ====================================================== */}
 
       <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
 
@@ -350,43 +432,51 @@ export default function ArchiveDetailPage() {
 
             </div>
 
-            {/* ACTION */}
+            {/* =================================================
+                ACTION
+                ADMIN + OPERATOR = EDIT
+                TAMU = TIDAK ADA EDIT
+            ================================================= */}
 
-<div className="flex flex-col gap-2 sm:flex-row lg:shrink-0">
+            <div className="flex flex-col gap-2 sm:flex-row lg:shrink-0">
 
-  <Link
-    href={`/arsip/${archive.nomor}/edit`}
-    className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
-  >
-    <Pencil size={17} />
-    Edit Arsip
-  </Link>
+              {canEdit && (
+                <Link
+                  href={`/arsip/${encodeURIComponent(
+                    archive.nomor
+                  )}/edit`}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+                >
+                  <Pencil size={17} />
+                  Edit Arsip
+                </Link>
+              )}
 
-  {hasFile && (
-    <>
-      <a
-        href={archive.linkFile}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
-      >
-        <FileText size={17} />
-        Buka PDF
-      </a>
+              {hasFile && (
+                <>
+                  <a
+                    href={archive.linkFile}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
+                  >
+                    <FileText size={17} />
+                    Buka PDF
+                  </a>
 
-      <a
-        href={archive.linkFile}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-      >
-        <ExternalLink size={17} />
-        Google Drive
-      </a>
-    </>
-  )}
+                  <a
+                    href={archive.linkFile}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                  >
+                    <ExternalLink size={17} />
+                    Google Drive
+                  </a>
+                </>
+              )}
 
-</div>
+            </div>
 
           </div>
 
@@ -394,15 +484,15 @@ export default function ArchiveDetailPage() {
 
       </section>
 
-      {/* =========================
+      {/* ======================================================
           CONTENT
-      ========================= */}
+      ====================================================== */}
 
       <section className="grid grid-cols-1 gap-6 xl:grid-cols-3">
 
-        {/* =========================
+        {/* ====================================================
             DATA SURAT
-        ========================= */}
+        ==================================================== */}
 
         <div className="rounded-2xl border border-slate-200 bg-white shadow-sm xl:col-span-2">
 
@@ -431,9 +521,9 @@ export default function ArchiveDetailPage() {
 
           </div>
 
-          <div className="grid grid-cols-1 divide-y divide-slate-100 sm:grid-cols-2 sm:divide-x sm:divide-y-0">
+          {/* NOMOR ARSIP / AGENDA */}
 
-            {/* NOMOR ARSIP */}
+          <div className="grid grid-cols-1 divide-y divide-slate-100 sm:grid-cols-2 sm:divide-x sm:divide-y-0">
 
             <div className="p-5 sm:p-6">
 
@@ -446,8 +536,6 @@ export default function ArchiveDetailPage() {
               </p>
 
             </div>
-
-            {/* NOMOR AGENDA */}
 
             <div className="p-5 sm:p-6">
 
@@ -464,9 +552,9 @@ export default function ArchiveDetailPage() {
 
           </div>
 
-          <div className="grid grid-cols-1 divide-y divide-slate-100 border-t border-slate-100 sm:grid-cols-2 sm:divide-x sm:divide-y-0">
+          {/* NOMOR SURAT / KLASIFIKASI */}
 
-            {/* NOMOR SURAT */}
+          <div className="grid grid-cols-1 divide-y divide-slate-100 border-t border-slate-100 sm:grid-cols-2 sm:divide-x sm:divide-y-0">
 
             <div className="p-5 sm:p-6">
 
@@ -480,8 +568,6 @@ export default function ArchiveDetailPage() {
               </p>
 
             </div>
-
-            {/* KLASIFIKASI */}
 
             <div className="p-5 sm:p-6">
 
@@ -504,9 +590,9 @@ export default function ArchiveDetailPage() {
 
           </div>
 
-          <div className="grid grid-cols-1 divide-y divide-slate-100 border-t border-slate-100 sm:grid-cols-2 sm:divide-x sm:divide-y-0">
+          {/* TANGGAL */}
 
-            {/* TANGGAL SURAT */}
+          <div className="grid grid-cols-1 divide-y divide-slate-100 border-t border-slate-100 sm:grid-cols-2 sm:divide-x sm:divide-y-0">
 
             <div className="p-5 sm:p-6">
 
@@ -543,8 +629,6 @@ export default function ArchiveDetailPage() {
               </div>
 
             </div>
-
-            {/* TANGGAL DITERIMA */}
 
             <div className="p-5 sm:p-6">
 
@@ -634,9 +718,9 @@ export default function ArchiveDetailPage() {
 
         </div>
 
-        {/* =========================
+        {/* ====================================================
             SIDEBAR
-        ========================= */}
+        ==================================================== */}
 
         <div className="space-y-6">
 
@@ -738,7 +822,6 @@ export default function ArchiveDetailPage() {
             <div className="mt-5 space-y-4">
 
               <div>
-
                 <p className="text-xs text-slate-400">
                   Nomor Arsip
                 </p>
@@ -746,11 +829,9 @@ export default function ArchiveDetailPage() {
                 <p className="mt-1 text-sm font-semibold text-slate-700">
                   #{archive.nomor}
                 </p>
-
               </div>
 
               <div>
-
                 <p className="text-xs text-slate-400">
                   Tahun
                 </p>
@@ -760,11 +841,9 @@ export default function ArchiveDetailPage() {
                     archive.tanggalDiterima
                   )}
                 </p>
-
               </div>
 
               <div>
-
                 <p className="text-xs text-slate-400">
                   Bulan
                 </p>
@@ -774,11 +853,9 @@ export default function ArchiveDetailPage() {
                     archive.tanggalDiterima
                   )}
                 </p>
-
               </div>
 
               <div>
-
                 <p className="text-xs text-slate-400">
                   Tanggal Input
                 </p>
@@ -788,7 +865,6 @@ export default function ArchiveDetailPage() {
                     archive.tanggalInput
                   )}
                 </p>
-
               </div>
 
             </div>
@@ -799,9 +875,9 @@ export default function ArchiveDetailPage() {
 
       </section>
 
-      {/* =========================
+      {/* ======================================================
           FOOTER ACTION
-      ========================= */}
+      ====================================================== */}
 
       <section className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 
@@ -832,8 +908,9 @@ export default function ArchiveDetailPage() {
 }
 
 /*
- * Icon kecil untuk tanggal diterima.
- * Dibuat terpisah supaya bagian utama tetap rapi.
+ * ============================================================
+ * ICON TANGGAL DITERIMA
+ * ============================================================
  */
 
 function InboxIcon() {
