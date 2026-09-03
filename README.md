@@ -85,7 +85,7 @@ Setiap selesai melakukan perubahan:
 
 git status
 git add .
-git commit -m "Camera"
+git commit -m "pdf wajib"
 git push
 
 Contoh:

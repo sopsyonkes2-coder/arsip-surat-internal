@@ -6,12 +6,14 @@ import {
   useEffect,
   useRef,
   useState,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { jsPDF } from "jspdf";
 import {
   ArrowLeft,
   Camera,
   Check,
+  Crop,
   FileText,
   Flashlight,
   Loader2,
@@ -20,10 +22,12 @@ import {
   RotateCw,
   X,
   Aperture,
+  Move,
 } from "lucide-react";
 
 type ScanFilter = "color" | "gray" | "bw";
-type Point = { x: number; y: number };
+type Point = { x: number; y: number }; // 0–1 relatif terhadap gambar
+type CropMode = "none" | "rect" | "perspective";
 
 type ScanPage = {
   id: string;
@@ -74,7 +78,10 @@ function downscale(c: HTMLCanvasElement, max = MAX_SIDE): HTMLCanvasElement {
   return o;
 }
 
-function rotateCanvas(c: HTMLCanvasElement, deg: 0 | 90 | 180 | 270): HTMLCanvasElement {
+function rotateCanvas(
+  c: HTMLCanvasElement,
+  deg: 0 | 90 | 180 | 270
+): HTMLCanvasElement {
   if (deg === 0) return c;
   const out = document.createElement("canvas");
   const rad = (deg * Math.PI) / 180;
@@ -99,43 +106,172 @@ function applyPixelAdjust(
   brightness: number,
   contrast: number
 ): HTMLCanvasElement {
-  const ctx = c.getContext("2d", { willReadFrequently: true });
+  const ctx = c.getContext("2d");
   if (!ctx) return c;
-  const id = ctx.getImageData(0, 0, c.width, c.height);
-  const d = id.data;
+  const img = ctx.getImageData(0, 0, c.width, c.height);
+  const d = img.data;
   const b = brightness * 2.55;
-  const contrastF = (259 * (contrast + 100)) / (100 * (259 - contrast));
+  const contrastFactor = (259 * (contrast + 255)) / (255 * (259 - contrast));
 
   for (let i = 0; i < d.length; i += 4) {
-    let r = contrastF * (d[i] - 128) + 128 + b;
-    let g = contrastF * (d[i + 1] - 128) + 128 + b;
-    let bl = contrastF * (d[i + 2] - 128) + 128 + b;
-    d[i] = Math.min(255, Math.max(0, r));
-    d[i + 1] = Math.min(255, Math.max(0, g));
-    d[i + 2] = Math.min(255, Math.max(0, bl));
-  }
+    let r = d[i];
+    let g = d[i + 1];
+    let bl = d[i + 2];
 
-  if (filter === "gray" || filter === "bw") {
-    for (let i = 0; i < d.length; i += 4) {
-      const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-      d[i] = d[i + 1] = d[i + 2] = g;
+    r = contrastFactor * (r - 128) + 128 + b;
+    g = contrastFactor * (g - 128) + 128 + b;
+    bl = contrastFactor * (bl - 128) + 128 + b;
+
+    if (filter === "gray" || filter === "bw") {
+      const gray = 0.299 * r + 0.587 * g + 0.114 * bl;
+      r = g = bl = gray;
     }
-  }
-  if (filter === "bw") {
-    let sum = 0;
-    const n = d.length / 4;
-    for (let i = 0; i < d.length; i += 4) sum += d[i];
-    const th = Math.min(175, Math.max(95, (sum / n) * 0.88));
-    for (let i = 0; i < d.length; i += 4) {
-      const v = d[i] < th ? 0 : 255;
-      d[i] = d[i + 1] = d[i + 2] = v;
+    if (filter === "bw") {
+      const v = r > 140 ? 255 : 0;
+      r = g = bl = v;
     }
+
+    d[i] = Math.max(0, Math.min(255, r));
+    d[i + 1] = Math.max(0, Math.min(255, g));
+    d[i + 2] = Math.max(0, Math.min(255, bl));
   }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+/** Crop persegi dari koordinat relatif 0–1 */
+function cropRectCanvas(
+  src: HTMLCanvasElement,
+  tl: Point,
+  br: Point
+): HTMLCanvasElement {
+  const x1 = Math.max(0, Math.min(1, Math.min(tl.x, br.x)));
+  const y1 = Math.max(0, Math.min(1, Math.min(tl.y, br.y)));
+  const x2 = Math.max(0, Math.min(1, Math.max(tl.x, br.x)));
+  const y2 = Math.max(0, Math.min(1, Math.max(tl.y, br.y)));
+
+  const sx = Math.round(x1 * src.width);
+  const sy = Math.round(y1 * src.height);
+  const sw = Math.max(1, Math.round((x2 - x1) * src.width));
+  const sh = Math.max(1, Math.round((y2 - y1) * src.height));
 
   const out = document.createElement("canvas");
-  out.width = c.width;
-  out.height = c.height;
-  out.getContext("2d")?.putImageData(id, 0, 0);
+  out.width = sw;
+  out.height = sh;
+  const ctx = out.getContext("2d");
+  if (!ctx) return src;
+  ctx.drawImage(src, sx, sy, sw, sh, 0, 0, sw, sh);
+  return out;
+}
+
+/**
+ * Perspective warp manual (tanpa OpenCV).
+ * corners: TL, TR, BR, BL dalam koordinat 0–1.
+ */
+function perspectiveWarp(
+  src: HTMLCanvasElement,
+  corners: [Point, Point, Point, Point],
+  outW?: number,
+  outH?: number
+): HTMLCanvasElement {
+  const toPx = (p: Point) => ({
+    x: p.x * src.width,
+    y: p.y * src.height,
+  });
+  const [tl, tr, br, bl] = corners.map(toPx);
+
+  const widthTop = Math.hypot(tr.x - tl.x, tr.y - tl.y);
+  const widthBottom = Math.hypot(br.x - bl.x, br.y - bl.y);
+  const heightLeft = Math.hypot(bl.x - tl.x, bl.y - tl.y);
+  const heightRight = Math.hypot(br.x - tr.x, br.y - tr.y);
+
+  const w = Math.max(
+    1,
+    Math.round(outW ?? Math.max(widthTop, widthBottom))
+  );
+  const h = Math.max(
+    1,
+    Math.round(outH ?? Math.max(heightLeft, heightRight))
+  );
+
+  // Homography 4 titik → rectangle (bilinear mesh)
+  const srcCtx = src.getContext("2d");
+  if (!srcCtx) return src;
+  const srcData = srcCtx.getImageData(0, 0, src.width, src.height);
+
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = h;
+  const outCtx = out.getContext("2d");
+  if (!outCtx) return src;
+  const outImg = outCtx.createImageData(w, h);
+
+  const sample = (x: number, y: number) => {
+    const x0 = Math.floor(x);
+    const y0 = Math.floor(y);
+    const x1 = Math.min(src.width - 1, x0 + 1);
+    const y1 = Math.min(src.height - 1, y0 + 1);
+    const fx = x - x0;
+    const fy = y - y0;
+
+    const idx = (ix: number, iy: number) => (iy * src.width + ix) * 4;
+
+    const i00 = idx(Math.max(0, x0), Math.max(0, y0));
+    const i10 = idx(x1, Math.max(0, y0));
+    const i01 = idx(Math.max(0, x0), y1);
+    const i11 = idx(x1, y1);
+
+    const r =
+      srcData.data[i00] * (1 - fx) * (1 - fy) +
+      srcData.data[i10] * fx * (1 - fy) +
+      srcData.data[i01] * (1 - fx) * fy +
+      srcData.data[i11] * fx * fy;
+    const g =
+      srcData.data[i00 + 1] * (1 - fx) * (1 - fy) +
+      srcData.data[i10 + 1] * fx * (1 - fy) +
+      srcData.data[i01 + 1] * (1 - fx) * fy +
+      srcData.data[i11 + 1] * fx * fy;
+    const b =
+      srcData.data[i00 + 2] * (1 - fx) * (1 - fy) +
+      srcData.data[i10 + 2] * fx * (1 - fy) +
+      srcData.data[i01 + 2] * (1 - fx) * fy +
+      srcData.data[i11 + 2] * fx * fy;
+
+    return [r, g, b] as const;
+  };
+
+  for (let y = 0; y < h; y++) {
+    const v = y / (h - 1 || 1);
+    for (let x = 0; x < w; x++) {
+      const u = x / (w - 1 || 1);
+
+      // Bilinear interpolation of quad corners
+      const topX = tl.x + (tr.x - tl.x) * u;
+      const topY = tl.y + (tr.y - tl.y) * u;
+      const botX = bl.x + (br.x - bl.x) * u;
+      const botY = bl.y + (br.y - bl.y) * u;
+      const srcX = topX + (botX - topX) * v;
+      const srcY = topY + (botY - topY) * v;
+
+      if (
+        srcX < 0 ||
+        srcY < 0 ||
+        srcX >= src.width - 1 ||
+        srcY >= src.height - 1
+      ) {
+        continue;
+      }
+
+      const [r, g, b] = sample(srcX, srcY);
+      const oi = (y * w + x) * 4;
+      outImg.data[oi] = r;
+      outImg.data[oi + 1] = g;
+      outImg.data[oi + 2] = b;
+      outImg.data[oi + 3] = 255;
+    }
+  }
+
+  outCtx.putImageData(outImg, 0, 0);
   return out;
 }
 
@@ -144,18 +280,34 @@ async function renderPreview(
   rotation: 0 | 90 | 180 | 270,
   filter: ScanFilter,
   brightness: number,
-  contrast: number
+  contrast: number,
+  cropMode: CropMode,
+  corners: [Point, Point, Point, Point]
 ): Promise<string> {
   const img = await loadImage(sourceDataUrl);
-  const src = document.createElement("canvas");
-  src.width = img.width;
-  src.height = img.height;
-  src.getContext("2d")?.drawImage(img, 0, 0);
+  let c = document.createElement("canvas");
+  c.width = img.naturalWidth;
+  c.height = img.naturalHeight;
+  c.getContext("2d")?.drawImage(img, 0, 0);
+  c = rotateCanvas(c, rotation);
 
-  let out = rotateCanvas(src, rotation);
-  out = applyPixelAdjust(out, filter, brightness, contrast);
-  return canvasJpeg(out);
+  if (cropMode === "rect") {
+    c = cropRectCanvas(c, corners[0], corners[2]);
+  } else if (cropMode === "perspective") {
+    c = perspectiveWarp(c, corners);
+  }
+
+  c = applyPixelAdjust(c, filter, brightness, contrast);
+  c = downscale(c);
+  return canvasJpeg(c);
 }
+
+const defaultCorners = (): [Point, Point, Point, Point] => [
+  { x: 0.08, y: 0.08 }, // TL
+  { x: 0.92, y: 0.08 }, // TR
+  { x: 0.92, y: 0.92 }, // BR
+  { x: 0.08, y: 0.92 }, // BL
+];
 
 type CameraCaptureProps = {
   open: boolean;
@@ -163,11 +315,16 @@ type CameraCaptureProps = {
   onComplete: (file: File) => void;
 };
 
-export default function CameraCapture({ open, onClose, onComplete }: CameraCaptureProps) {
+export default function CameraCapture({
+  open,
+  onClose,
+  onComplete,
+}: CameraCaptureProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const trackRef = useRef<MediaStreamTrack | null>(null);
   const startingRef = useRef(false);
+  const cropBoxRef = useRef<HTMLDivElement>(null);
 
   const [phase, setPhase] = useState<"live" | "edit">("live");
   const [scanPages, setScanPages] = useState<ScanPage[]>([]);
@@ -184,6 +341,11 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
   const [editBusy, setEditBusy] = useState(false);
   const [editingPageId, setEditingPageId] = useState<string | null>(null);
 
+  const [cropMode, setCropMode] = useState<CropMode>("none");
+  const [corners, setCorners] =
+    useState<[Point, Point, Point, Point]>(defaultCorners);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+
   const [buildingPdf, setBuildingPdf] = useState(false);
   const [pdfPreview, setPdfPreview] = useState<PdfPreviewState | null>(null);
   const [pdfPreviewOpen, setPdfPreviewOpen] = useState(false);
@@ -199,14 +361,18 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
     if (video) {
       try {
         video.pause();
-      } catch {}
+      } catch {
+        /* ignore */
+      }
       video.srcObject = null;
     }
     if (stream) {
       stream.getTracks().forEach((t) => {
         try {
           t.stop();
-        } catch {}
+        } catch {
+          /* ignore */
+        }
       });
     }
     setCameraReady(false);
@@ -214,7 +380,6 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
     setTorchSupported(false);
   }, []);
 
-  // Cleanup saat close / unmount
   useEffect(() => {
     if (!open) {
       stopStream();
@@ -225,6 +390,8 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
       setEditSource("");
       setEditPreview("");
       setEditingPageId(null);
+      setCropMode("none");
+      setCorners(defaultCorners());
     }
   }, [open, stopStream]);
 
@@ -233,6 +400,7 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
       stopStream();
       if (pdfPreview?.url) URL.revokeObjectURL(pdfPreview.url);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -242,7 +410,6 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
     };
   }, [open, pdfPreviewOpen]);
 
-  // Start camera — satu effect yang bersih
   useEffect(() => {
     if (!open || phase !== "live") return;
 
@@ -254,7 +421,6 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
       setError("");
       setCameraReady(false);
 
-      // pastikan stream lama benar-benar mati
       stopStream();
       await new Promise((r) => setTimeout(r, 120));
 
@@ -292,9 +458,13 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
         trackRef.current = track;
 
         try {
-          const caps = track.getCapabilities?.() as { torch?: boolean } | undefined;
+          const caps = track.getCapabilities?.() as
+            | { torch?: boolean }
+            | undefined;
           if (caps?.torch) setTorchSupported(true);
-        } catch {}
+        } catch {
+          /* ignore */
+        }
 
         const video = videoRef.current;
         if (video) {
@@ -304,7 +474,7 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
           try {
             await video.play();
           } catch {
-            // autoplay kadang digagalkan browser; user tinggal tap layar
+            /* autoplay blocked */
           }
         }
 
@@ -330,11 +500,9 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
 
     return () => {
       cancelled = true;
-      // jangan stop di sini kalau phase masih live & open — biar diganti di effect open=false
     };
   }, [open, phase, stopStream]);
 
-  // Attach stream ke video setiap kali videoRef siap
   useEffect(() => {
     if (!open || phase !== "live") return;
     const video = videoRef.current;
@@ -377,31 +545,56 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
     setEditBrightness(0);
     setEditContrast(10);
     setEditingPageId(null);
+    setCropMode("none");
+    setCorners(defaultCorners());
     setPhase("edit");
 
-    // stop stream sementara edit (hemat baterai + hindari lock)
     stopStream();
 
     setEditBusy(true);
     try {
-      const preview = await renderPreview(sourceDataUrl, 0, "color", 0, 10);
+      const preview = await renderPreview(
+        sourceDataUrl,
+        0,
+        "color",
+        0,
+        10,
+        "none",
+        defaultCorners()
+      );
       setEditPreview(preview);
     } finally {
       setEditBusy(false);
     }
   };
 
-  // refresh preview saat setting berubah
   useEffect(() => {
     if (phase !== "edit" || !editSource) return;
     const t = window.setTimeout(() => {
       setEditBusy(true);
-      void renderPreview(editSource, editRotation, editFilter, editBrightness, editContrast)
+      void renderPreview(
+        editSource,
+        editRotation,
+        editFilter,
+        editBrightness,
+        editContrast,
+        cropMode,
+        corners
+      )
         .then(setEditPreview)
         .finally(() => setEditBusy(false));
-    }, 120);
+    }, 140);
     return () => window.clearTimeout(t);
-  }, [phase, editSource, editRotation, editFilter, editBrightness, editContrast]);
+  }, [
+    phase,
+    editSource,
+    editRotation,
+    editFilter,
+    editBrightness,
+    editContrast,
+    cropMode,
+    corners,
+  ]);
 
   const acceptEditPage = async () => {
     setEditBusy(true);
@@ -411,7 +604,9 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
         editRotation,
         editFilter,
         editBrightness,
-        editContrast
+        editContrast,
+        cropMode,
+        corners
       );
       const page: ScanPage = {
         id: editingPageId ?? `p-${Date.now()}`,
@@ -431,6 +626,7 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
       setEditSource("");
       setEditPreview("");
       setEditingPageId(null);
+      setCropMode("none");
     } finally {
       setEditBusy(false);
     }
@@ -441,6 +637,7 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
     setEditSource("");
     setEditPreview("");
     setEditingPageId(null);
+    setCropMode("none");
   };
 
   const editExistingPage = (page: ScanPage) => {
@@ -451,6 +648,8 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
     setEditBrightness(page.brightness);
     setEditContrast(page.contrast);
     setEditPreview(page.previewDataUrl);
+    setCropMode("none");
+    setCorners(defaultCorners());
     setPhase("edit");
     stopStream();
   };
@@ -466,47 +665,42 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
   }, []);
 
   const buildPdf = async () => {
-  if (!scanPages.length) throw new Error("Belum ada halaman");
+    if (!scanPages.length) throw new Error("Belum ada halaman");
 
-  const pdf = new jsPDF({
-    unit: "mm",
-    format: "a4",
-    compress: true,
-  });
+    const pdf = new jsPDF({
+      unit: "mm",
+      format: "a4",
+      compress: true,
+    });
 
-  const A4_WIDTH = 210;
-  const A4_HEIGHT = 297;
+    const A4_WIDTH = 210;
+    const A4_HEIGHT = 297;
 
-  for (let i = 0; i < scanPages.length; i++) {
-    const page = scanPages[i];
-
-    if (i > 0) {
-      pdf.addPage("a4", "portrait");
+    for (let i = 0; i < scanPages.length; i++) {
+      const page = scanPages[i];
+      if (i > 0) pdf.addPage("a4", "portrait");
+      pdf.addImage(
+        page.previewDataUrl,
+        "JPEG",
+        0,
+        0,
+        A4_WIDTH,
+        A4_HEIGHT,
+        undefined,
+        "FAST"
+      );
     }
 
-    // Gambar memenuhi seluruh halaman A4
-    pdf.addImage(
-      page.previewDataUrl,
-      "JPEG",
-      0,
-      0,
-      A4_WIDTH,
-      A4_HEIGHT,
-      undefined,
-      "FAST"
-    );
-  }
+    const blob = new Blob([pdf.output("arraybuffer")], {
+      type: "application/pdf",
+    });
 
-  const blob = new Blob([pdf.output("arraybuffer")], {
-    type: "application/pdf",
-  });
-
-  return {
-    blob,
-    fileName: `scan-${Date.now()}.pdf`,
-    pageCount: scanPages.length,
+    return {
+      blob,
+      fileName: `scan-${Date.now()}.pdf`,
+      pageCount: scanPages.length,
+    };
   };
-};
 
   const makeScanPdf = async () => {
     if (!scanPages.length || buildingPdf) return;
@@ -542,7 +736,72 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
     onClose();
   };
 
+  /* ---- Drag crop handles ---- */
+  const onHandlePointerDown = (index: number, e: ReactPointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    setDragIndex(index);
+  };
+
+  const onCropPointerMove = (e: ReactPointerEvent) => {
+    if (dragIndex === null || !cropBoxRef.current) return;
+    const rect = cropBoxRef.current.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+
+    let x = (e.clientX - rect.left) / rect.width;
+    let y = (e.clientY - rect.top) / rect.height;
+    x = Math.max(0.02, Math.min(0.98, x));
+    y = Math.max(0.02, Math.min(0.98, y));
+
+    setCorners((prev) => {
+      const next = [...prev] as [Point, Point, Point, Point];
+      if (cropMode === "rect") {
+        // TL=0, TR=1, BR=2, BL=3 — jaga bentuk persegi
+        if (dragIndex === 0) {
+          next[0] = { x, y };
+          next[1] = { x: next[1].x, y };
+          next[3] = { x, y: next[3].y };
+        } else if (dragIndex === 1) {
+          next[1] = { x, y };
+          next[0] = { x: next[0].x, y };
+          next[2] = { x, y: next[2].y };
+        } else if (dragIndex === 2) {
+          next[2] = { x, y };
+          next[1] = { x, y: next[1].y };
+          next[3] = { x: next[3].x, y };
+        } else if (dragIndex === 3) {
+          next[3] = { x, y };
+          next[0] = { x, y: next[0].y };
+          next[2] = { x: next[2].x, y };
+        }
+      } else {
+        next[dragIndex] = { x, y };
+      }
+      return next;
+    });
+  };
+
+  const onCropPointerUp = () => setDragIndex(null);
+
+  const enableRectCrop = () => {
+    setCorners(defaultCorners());
+    setCropMode("rect");
+  };
+
+  const enablePerspectiveCrop = () => {
+    setCorners(defaultCorners());
+    setCropMode("perspective");
+  };
+
+  const clearCrop = () => {
+    setCropMode("none");
+    setCorners(defaultCorners());
+  };
+
   if (!open) return null;
+
+  const showCropOverlay = cropMode !== "none" && phase === "edit";
 
   return (
     <>
@@ -674,8 +933,17 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
               <div className="p-3">
                 <p className="mb-1 text-xs text-slate-400">
                   Hasil {editBusy && "(memproses…)"}
+                  {cropMode === "rect" && " · Crop persegi"}
+                  {cropMode === "perspective" && " · Perspective — geser 4 titik"}
                 </p>
-                <div className="relative mx-auto aspect-[3/4] w-full max-w-sm overflow-hidden rounded-xl bg-white">
+
+                <div
+                  ref={cropBoxRef}
+                  className="relative mx-auto aspect-[3/4] w-full max-w-sm overflow-hidden rounded-xl bg-white touch-none"
+                  onPointerMove={onCropPointerMove}
+                  onPointerUp={onCropPointerUp}
+                  onPointerLeave={onCropPointerUp}
+                >
                   {editPreview ? (
                     <Image
                       src={editPreview}
@@ -683,16 +951,91 @@ export default function CameraCapture({ open, onClose, onComplete }: CameraCaptu
                       fill
                       unoptimized
                       className="object-contain"
+                      draggable={false}
                     />
                   ) : (
                     <div className="flex h-full items-center justify-center text-slate-400">
                       <Loader2 className="animate-spin" />
                     </div>
                   )}
+
+                  {/* Overlay crop — pakai gambar sumber mentah via CSS, handles di atas */}
+                  {showCropOverlay && (
+                    <>
+                      {/* garis penghubung */}
+                      <svg
+                        className="pointer-events-none absolute inset-0 h-full w-full"
+                        viewBox="0 0 100 100"
+                        preserveAspectRatio="none"
+                      >
+                        <polygon
+                          points={corners
+                            .map((c) => `${c.x * 100},${c.y * 100}`)
+                            .join(" ")}
+                          fill="rgba(59,130,246,0.15)"
+                          stroke="#3b82f6"
+                          strokeWidth="0.8"
+                        />
+                      </svg>
+
+                      {corners.map((c, i) => (
+                        <button
+                          key={i}
+                          type="button"
+                          onPointerDown={(e) => onHandlePointerDown(i, e)}
+                          className="absolute z-10 flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-white bg-blue-600 shadow-lg"
+                          style={{
+                            left: `${c.x * 100}%`,
+                            top: `${c.y * 100}%`,
+                          }}
+                          aria-label={`Titik ${i + 1}`}
+                        >
+                          <Move size={12} className="text-white" />
+                        </button>
+                      ))}
+                    </>
+                  )}
                 </div>
               </div>
 
               <div className="space-y-2 border-t border-slate-800 px-3 py-2">
+                {/* Crop controls */}
+                <div className="flex flex-wrap justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={enableRectCrop}
+                    className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${
+                      cropMode === "rect"
+                        ? "bg-blue-600 text-white"
+                        : "bg-slate-800 text-slate-300"
+                    }`}
+                  >
+                    <Crop size={14} className="mr-1 inline" />
+                    Crop
+                  </button>
+                  <button
+                    type="button"
+                    onClick={enablePerspectiveCrop}
+                    className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${
+                      cropMode === "perspective"
+                        ? "bg-blue-600 text-white"
+                        : "bg-slate-800 text-slate-300"
+                    }`}
+                  >
+                    <Move size={14} className="mr-1 inline" />
+                    Perspective
+                  </button>
+                  {cropMode !== "none" && (
+                    <button
+                      type="button"
+                      onClick={clearCrop}
+                      className="rounded-lg bg-slate-800 px-3 py-1.5 text-xs text-slate-300"
+                    >
+                      Reset Crop
+                    </button>
+                  )}
+                </div>
+
                 <div className="flex flex-wrap justify-center gap-2">
                   {(["color", "gray", "bw"] as ScanFilter[]).map((f) => (
                     <button
