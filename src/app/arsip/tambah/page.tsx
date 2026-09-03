@@ -88,7 +88,6 @@ export default function TambahArsipPage() {
     e.preventDefault();
     setError("");
 
-    // PDF TIDAK WAJIB UNTUK TEST
     if (
       !form.agenda ||
       !form.nomorSurat ||
@@ -99,6 +98,11 @@ export default function TambahArsipPage() {
       !form.klasifikasi
     ) {
       setError("Mohon lengkapi seluruh data.");
+      return;
+    }
+
+    if (!file) {
+      setError("File PDF wajib diunggah.");
       return;
     }
 
@@ -116,11 +120,7 @@ export default function TambahArsipPage() {
       formData.append("klasifikasi", form.klasifikasi);
       formData.append("jenisSurat", form.jenisSurat);
       formData.append("keterangan", form.keterangan);
-
-      // PDF hanya dikirim jika dipilih
-      if (file) {
-        formData.append("file", file);
-      }
+      formData.append("file", file);
 
       const response = await fetch("/api/archives", {
         method: "POST",
@@ -208,10 +208,7 @@ export default function TambahArsipPage() {
           </div>
 
           <div className="grid grid-cols-1 gap-5 p-5 md:grid-cols-2">
-            <FormField
-              label="Nomor Agenda"
-              required
-            >
+            <FormField label="Nomor Agenda" required>
               <input
                 name="agenda"
                 value={form.agenda}
@@ -221,10 +218,7 @@ export default function TambahArsipPage() {
               />
             </FormField>
 
-            <FormField
-              label="Keterangan"
-              full
-            >
+            <FormField label="Keterangan" full>
               <textarea
                 name="keterangan"
                 value={form.keterangan}
@@ -235,10 +229,7 @@ export default function TambahArsipPage() {
               />
             </FormField>
 
-            <FormField
-              label="Nomor Surat"
-              required
-            >
+            <FormField label="Nomor Surat" required>
               <input
                 name="nomorSurat"
                 value={form.nomorSurat}
@@ -248,10 +239,7 @@ export default function TambahArsipPage() {
               />
             </FormField>
 
-            <FormField
-              label="Tanggal Surat"
-              required
-            >
+            <FormField label="Tanggal Surat" required>
               <div className="relative">
                 <CalendarDays
                   size={17}
@@ -268,10 +256,7 @@ export default function TambahArsipPage() {
               </div>
             </FormField>
 
-            <FormField
-              label="Tanggal Diterima"
-              required
-            >
+            <FormField label="Tanggal Diterima" required>
               <div className="relative">
                 <CalendarDays
                   size={17}
@@ -288,11 +273,7 @@ export default function TambahArsipPage() {
               </div>
             </FormField>
 
-            <FormField
-              label="Pengirim"
-              required
-              full
-            >
+            <FormField label="Pengirim" required full>
               <input
                 name="pengirim"
                 value={form.pengirim}
@@ -302,11 +283,7 @@ export default function TambahArsipPage() {
               />
             </FormField>
 
-            <FormField
-              label="Perihal"
-              required
-              full
-            >
+            <FormField label="Perihal" required full>
               <textarea
                 name="perihal"
                 value={form.perihal}
@@ -317,25 +294,17 @@ export default function TambahArsipPage() {
               />
             </FormField>
 
-            <FormField
-              label="Klasifikasi"
-              required
-            >
+            <FormField label="Klasifikasi" required>
               <select
                 name="klasifikasi"
                 value={form.klasifikasi}
                 onChange={handleChange}
                 className="input"
               >
-                <option value="">
-                  Pilih klasifikasi
-                </option>
+                <option value="">Pilih klasifikasi</option>
 
                 {classifications.map((item) => (
-                  <option
-                    key={item}
-                    value={item}
-                  >
+                  <option key={item} value={item}>
                     {item}
                   </option>
                 ))}
@@ -386,9 +355,7 @@ export default function TambahArsipPage() {
                 onDrop={(e) => {
                   e.preventDefault();
                   setDragActive(false);
-                  handleFile(
-                    e.dataTransfer.files?.[0]
-                  );
+                  handleFile(e.dataTransfer.files?.[0]);
                 }}
                 className={`rounded-2xl border-2 border-dashed p-8 text-center transition md:p-12 ${
                   dragActive
@@ -420,9 +387,7 @@ export default function TambahArsipPage() {
                     type="file"
                     accept="application/pdf"
                     onChange={(e) => {
-                      handleFile(
-                        e.target.files?.[0]
-                      );
+                      handleFile(e.target.files?.[0]);
                     }}
                     className="hidden"
                   />
@@ -448,12 +413,7 @@ export default function TambahArsipPage() {
                     </p>
 
                     <p className="mt-1 text-xs text-slate-400">
-                      {(
-                        file.size /
-                        1024 /
-                        1024
-                      ).toFixed(2)}{" "}
-                      MB
+                      {(file.size / 1024 / 1024).toFixed(2)} MB
                     </p>
                   </div>
 
@@ -476,10 +436,6 @@ export default function TambahArsipPage() {
               <Camera size={17} />
               Scan dengan Kamera
             </button>
-
-            <p className="mt-3 text-xs text-amber-600">
-              Mode pengujian: PDF sementara tidak wajib.
-            </p>
           </div>
         </section>
 
@@ -499,14 +455,11 @@ export default function TambahArsipPage() {
           >
             <Save size={18} />
 
-            {saving
-              ? "Menyimpan..."
-              : "Simpan Arsip"}
+            {saving ? "Menyimpan..." : "Simpan Arsip"}
           </button>
         </section>
       </form>
 
-      {/* CAMERA */}
       <CameraCapture
         open={cameraOpen}
         onClose={() => setCameraOpen(false)}
@@ -516,7 +469,6 @@ export default function TambahArsipPage() {
         }}
       />
 
-      {/* STYLE */}
       <style jsx>{`
         .input {
           width: 100%;
@@ -560,9 +512,7 @@ function FormField({
         {label}
 
         {required && (
-          <span className="ml-1 text-red-500">
-            *
-          </span>
+          <span className="ml-1 text-red-500">*</span>
         )}
       </label>
 
