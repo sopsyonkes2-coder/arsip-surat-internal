@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
-import { getOAuthServices } from "@/lib/google-oauth";
+import { getGoogleServices } from "@/lib/google";
 import {
   hashPassword,
   readSession,
@@ -10,6 +10,7 @@ import {
 
 const spreadsheetId = process.env.GOOGLE_SPREADSHEET_ID || "";
 const sheetName = process.env.GOOGLE_USERS_SHEET_NAME || "PENGGUNA";
+
 const headers = [
   "ID",
   "NAMA",
@@ -48,16 +49,16 @@ async function getRows() {
     throw new Error("GOOGLE_SPREADSHEET_ID belum dikonfigurasi.");
   }
 
-  const { oauthSheets } = getOAuthServices();
+  const { sheets } = getGoogleServices();
 
   try {
-    const response = await oauthSheets.spreadsheets.values.get({
+    const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: `${sheetName}!A:I`,
     });
-    return { oauthSheets, rows: response.data.values || [] };
+    return { sheets, rows: response.data.values || [] };
   } catch {
-    const spreadsheet = await oauthSheets.spreadsheets.get({
+    const spreadsheet = await sheets.spreadsheets.get({
       spreadsheetId,
       fields: "sheets(properties(title))",
     });
@@ -67,7 +68,7 @@ async function getRows() {
     );
 
     if (!exists) {
-      await oauthSheets.spreadsheets.batchUpdate({
+      await sheets.spreadsheets.batchUpdate({
         spreadsheetId,
         requestBody: {
           requests: [{ addSheet: { properties: { title: sheetName } } }],
@@ -75,14 +76,14 @@ async function getRows() {
       });
     }
 
-    await oauthSheets.spreadsheets.values.update({
+    await sheets.spreadsheets.values.update({
       spreadsheetId,
       range: `${sheetName}!A1:I1`,
       valueInputOption: "RAW",
       requestBody: { values: [headers] },
     });
 
-    return { oauthSheets, rows: [headers] };
+    return { sheets, rows: [headers] };
   }
 }
 
@@ -90,7 +91,6 @@ function parseRole(value: unknown): Role {
   if (value === "Admin" || value === "Operator" || value === "Tamu") {
     return value;
   }
-  // Default aman ke Tamu — JANGAN pernah ke Admin
   return "Tamu";
 }
 
@@ -147,7 +147,9 @@ export async function GET(request: NextRequest) {
       {
         success: false,
         message:
-          error instanceof Error ? error.message : "Gagal mengambil pengguna.",
+          error instanceof Error
+            ? error.message
+            : "Gagal mengambil pengguna.",
       },
       { status: 500 }
     );
@@ -176,9 +178,8 @@ export async function POST(request: NextRequest) {
     const nrp = (body.nrp || "").trim();
     const username = (body.username || "").trim().toLowerCase();
     const password = body.password || "";
-    const role = parseRole(body.role); // "Operator" akan lolos di sini
+    const role = parseRole(body.role);
 
-    // ===== VALIDASI TERPISAH =====
     if (!nama) {
       return NextResponse.json(
         { success: false, message: "Nama wajib diisi." },
@@ -214,15 +215,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Role sudah di-parse, pastikan valid
     if (role !== "Admin" && role !== "Operator" && role !== "Tamu") {
       return NextResponse.json(
-        { success: false, message: "Role harus Admin, Operator, atau Tamu." },
+        {
+          success: false,
+          message: "Role harus Admin, Operator, atau Tamu.",
+        },
         { status: 400 }
       );
     }
 
-    const { oauthSheets, rows } = await getRows();
+    const { sheets, rows } = await getRows();
     const existing = rows.slice(1).map(mapUser);
 
     if (
@@ -232,14 +235,17 @@ export async function POST(request: NextRequest) {
       )
     ) {
       return NextResponse.json(
-        { success: false, message: "Username atau NRP sudah digunakan." },
+        {
+          success: false,
+          message: "Username atau NRP sudah digunakan.",
+        },
         { status: 409 }
       );
     }
 
     const now = new Date().toISOString();
 
-    await oauthSheets.spreadsheets.values.append({
+    await sheets.spreadsheets.values.append({
       spreadsheetId,
       range: `${sheetName}!A:I`,
       valueInputOption: "RAW",
@@ -252,7 +258,7 @@ export async function POST(request: NextRequest) {
             nrp,
             username,
             hashPassword(password),
-            role, // akan berisi "Operator" jika dipilih
+            role,
             parseStatus(body.status),
             now,
             now,
@@ -270,7 +276,9 @@ export async function POST(request: NextRequest) {
       {
         success: false,
         message:
-          error instanceof Error ? error.message : "Gagal menambah pengguna.",
+          error instanceof Error
+            ? error.message
+            : "Gagal menambah pengguna.",
       },
       { status: 500 }
     );
@@ -303,7 +311,7 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
-    const { oauthSheets, rows } = await getRows();
+    const { sheets, rows } = await getRows();
     const index = rows.slice(1).findIndex((row) => row[0] === body.id);
 
     if (index < 0) {
@@ -327,7 +335,9 @@ export async function PATCH(request: NextRequest) {
     const updatedRole =
       body.role !== undefined ? parseRole(body.role) : current.role;
     const updatedStatus =
-      body.status !== undefined ? parseStatus(body.status) : current.status;
+      body.status !== undefined
+        ? parseStatus(body.status)
+        : current.status;
 
     if (!updatedNama) {
       return NextResponse.json(
@@ -386,12 +396,15 @@ export async function PATCH(request: NextRequest) {
 
     if (duplicate) {
       return NextResponse.json(
-        { success: false, message: "Username atau NRP sudah digunakan." },
+        {
+          success: false,
+          message: "Username atau NRP sudah digunakan.",
+        },
         { status: 409 }
       );
     }
 
-    await oauthSheets.spreadsheets.values.update({
+    await sheets.spreadsheets.values.update({
       spreadsheetId,
       range: `${sheetName}!A${index + 2}:I${index + 2}`,
       valueInputOption: "RAW",
@@ -407,7 +420,9 @@ export async function PATCH(request: NextRequest) {
       {
         success: false,
         message:
-          error instanceof Error ? error.message : "Gagal mengubah pengguna.",
+          error instanceof Error
+            ? error.message
+            : "Gagal mengubah pengguna.",
       },
       { status: 500 }
     );
@@ -431,7 +446,7 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    const { oauthSheets, rows } = await getRows();
+    const { sheets, rows } = await getRows();
     const index = rows.slice(1).findIndex((row) => row[0] === id);
 
     if (index < 0) {
@@ -441,7 +456,7 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    const spreadsheet = await oauthSheets.spreadsheets.get({
+    const spreadsheet = await sheets.spreadsheets.get({
       spreadsheetId,
       fields: "sheets(properties(sheetId,title))",
     });
@@ -455,7 +470,7 @@ export async function DELETE(request: NextRequest) {
       throw new Error(`Sheet ${sheetName} tidak ditemukan.`);
     }
 
-    await oauthSheets.spreadsheets.batchUpdate({
+    await sheets.spreadsheets.batchUpdate({
       spreadsheetId,
       requestBody: {
         requests: [
@@ -482,7 +497,9 @@ export async function DELETE(request: NextRequest) {
       {
         success: false,
         message:
-          error instanceof Error ? error.message : "Gagal menghapus pengguna.",
+          error instanceof Error
+            ? error.message
+            : "Gagal menghapus pengguna.",
       },
       { status: 500 }
     );

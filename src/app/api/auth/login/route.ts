@@ -7,7 +7,7 @@ import {
   verifyPassword,
 } from "@/lib/auth";
 
-import { getOAuthServices } from "@/lib/google-oauth";
+import { getGoogleServices } from "@/lib/google"; // sesuaikan path kalau beda
 
 export async function POST(request: Request) {
   try {
@@ -31,7 +31,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const { oauthSheets } = getOAuthServices();
+    const { sheets } = getGoogleServices();
 
     const spreadsheetId =
       process.env.GOOGLE_SPREADSHEET_ID || "";
@@ -51,7 +51,7 @@ export async function POST(request: Request) {
     }
 
     const sheetResponse =
-      await oauthSheets.spreadsheets.values.get({
+      await sheets.spreadsheets.values.get({
         spreadsheetId,
         range: `${sheetName}!A:I`,
       });
@@ -259,7 +259,9 @@ export async function POST(request: Request) {
       {
         success: false,
         message:
-          "Terjadi kesalahan saat menghubungkan ke Google Sheet.",
+          error instanceof Error
+            ? error.message
+            : "Terjadi kesalahan saat menghubungkan ke Google Sheet.",
       },
       { status: 500 }
     );

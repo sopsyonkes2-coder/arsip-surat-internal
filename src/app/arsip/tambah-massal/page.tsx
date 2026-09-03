@@ -24,6 +24,17 @@ type Row = {
   file: File | null;
 };
 
+const classifications = [
+  "B",
+  "SE",
+  "SP",
+  "ST",
+  "STR",
+  "R",
+  "Brafax",
+  "Lainnya",
+];
+
 const emptyRow = (id: number): Row => ({
   id,
   nomorAgenda: "",
@@ -76,7 +87,10 @@ export default function TambahMassalPage() {
   };
 
   const duplicateRow = (row: Row) =>
-    setRows((current) => [...current, { ...row, id: Date.now() }]);
+    setRows((current) => [
+      ...current,
+      { ...row, id: Date.now(), file: null },
+    ]);
 
   const saveAll = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -99,6 +113,7 @@ export default function TambahMassalPage() {
         failed += 1;
         continue;
       }
+
       const formData = new FormData();
       formData.append("nomorAgenda", row.nomorAgenda);
       formData.append("nomorSurat", row.nomorSurat);
@@ -108,6 +123,7 @@ export default function TambahMassalPage() {
       formData.append("perihal", row.perihal);
       formData.append("klasifikasi", row.klasifikasi);
       formData.append("file", row.file);
+
       try {
         const response = await fetch("/api/archives", {
           method: "POST",
@@ -120,7 +136,13 @@ export default function TambahMassalPage() {
         failed += 1;
       }
     }
+
     setResult(`Berhasil: ${success} | Gagal: ${failed}`);
+
+    if (success > 0 && failed === 0) {
+      setRows([emptyRow(1)]);
+    }
+
     setSaving(false);
   };
 
@@ -196,15 +218,32 @@ export default function TambahMassalPage() {
                   </td>
                   {fields.map((field) => (
                     <td key={field} className="px-2 py-2">
-                      <input
-                        type={field.includes("tanggal") ? "date" : "text"}
-                        value={row[field]}
-                        onChange={(e) =>
-                          updateRow(row.id, field, e.target.value)
-                        }
-                        placeholder={fieldLabels[field]}
-                        className={inputClass}
-                      />
+                      {field === "klasifikasi" ? (
+                        <select
+                          value={row.klasifikasi}
+                          onChange={(e) =>
+                            updateRow(row.id, "klasifikasi", e.target.value)
+                          }
+                          className={inputClass}
+                        >
+                          <option value="">Pilih klasifikasi</option>
+                          {classifications.map((item) => (
+                            <option key={item} value={item}>
+                              {item}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type={field.includes("tanggal") ? "date" : "text"}
+                          value={row[field]}
+                          onChange={(e) =>
+                            updateRow(row.id, field, e.target.value)
+                          }
+                          placeholder={fieldLabels[field]}
+                          className={inputClass}
+                        />
+                      )}
                     </td>
                   ))}
                   <td className="px-2 py-2">
@@ -289,7 +328,6 @@ export default function TambahMassalPage() {
         </div>
       </form>
 
-      {/* Scanner lengkap (OpenCV + multi-page) */}
       <CameraCapture
         open={cameraRowId !== null}
         onClose={() => setCameraRowId(null)}
