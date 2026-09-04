@@ -276,6 +276,11 @@ function perspectiveWarp(
   return out;
 }
 
+/**
+ * Render preview.
+ * applyCrop=false → hanya rotasi + filter (untuk overlay crop tetap akurat).
+ * applyCrop=true  → crop/perspective ikut diterapkan (saat simpan halaman).
+ */
 async function renderPreview(
   sourceDataUrl: string,
   rotation: 0 | 90 | 180 | 270,
@@ -283,7 +288,8 @@ async function renderPreview(
   brightness: number,
   contrast: number,
   cropMode: CropMode,
-  corners: [Point, Point, Point, Point]
+  corners: [Point, Point, Point, Point],
+  applyCrop = true
 ): Promise<string> {
   const img = await loadImage(sourceDataUrl);
   let c = document.createElement("canvas");
@@ -292,10 +298,12 @@ async function renderPreview(
   c.getContext("2d")?.drawImage(img, 0, 0);
   c = rotateCanvas(c, rotation);
 
-  if (cropMode === "rect") {
-    c = cropRectCanvas(c, corners[0], corners[2]);
-  } else if (cropMode === "perspective") {
-    c = perspectiveWarp(c, corners);
+  if (applyCrop) {
+    if (cropMode === "rect") {
+      c = cropRectCanvas(c, corners[0], corners[2]);
+    } else if (cropMode === "perspective") {
+      c = perspectiveWarp(c, corners);
+    }
   }
 
   c = applyPixelAdjust(c, filter, brightness, contrast);
@@ -679,6 +687,10 @@ export default function CameraCapture({
     if (phase !== "edit" || !editSource) return;
     const t = window.setTimeout(() => {
       setEditBusy(true);
+      // Saat mode crop aktif: jangan apply crop di preview live
+      // supaya 4 titik handle tetap pas di atas gambar utuh.
+      // Crop diterapkan lewat tombol Apply Crop / Apply Perspective.
+      const liveApplyCrop = cropMode === "none";
       void renderPreview(
         editSource,
         editRotation,
@@ -686,7 +698,8 @@ export default function CameraCapture({
         editBrightness,
         editContrast,
         cropMode,
-        corners
+        corners,
+        liveApplyCrop
       )
         .then(setEditPreview)
         .finally(() => setEditBusy(false));
@@ -706,19 +719,46 @@ export default function CameraCapture({
   const acceptEditPage = async () => {
     setEditBusy(true);
     try {
+      // Jika masih mode crop (belum Apply), otomatis bake dulu
+      let source = editSource;
+      let rotation: 0 | 90 | 180 | 270 = editRotation;
+      let mode: CropMode = cropMode;
+      let pts = corners;
+
+      if (mode !== "none") {
+        const img = await loadImage(source);
+        let c = document.createElement("canvas");
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
+        c.getContext("2d")?.drawImage(img, 0, 0);
+        c = rotateCanvas(c, rotation);
+        if (mode === "rect") {
+          c = cropRectCanvas(c, pts[0], pts[2]);
+        } else if (mode === "perspective") {
+          c = perspectiveWarp(c, pts);
+        }
+        c = downscale(c);
+        source = canvasJpeg(c, 0.9);
+        rotation = 0;
+        mode = "none";
+        pts = defaultCorners();
+      }
+
       const previewDataUrl = await renderPreview(
-        editSource,
-        editRotation,
+        source,
+        rotation,
         editFilter,
         editBrightness,
         editContrast,
-        cropMode,
-        corners
+        "none",
+        defaultCorners(),
+        false
       );
+
       const page: ScanPage = {
         id: editingPageId ?? `p-${Date.now()}`,
-        sourceDataUrl: editSource,
-        rotation: editRotation,
+        sourceDataUrl: source,
+        rotation,
         filter: editFilter,
         brightness: editBrightness,
         contrast: editContrast,
@@ -734,6 +774,7 @@ export default function CameraCapture({
       setEditPreview("");
       setEditingPageId(null);
       setCropMode("none");
+      setCorners(defaultCorners());
     } finally {
       setEditBusy(false);
     }
@@ -906,6 +947,53 @@ export default function CameraCapture({
     setCorners(defaultCorners());
   };
 
+  /** Apply crop / perspective ke source saat ini, lalu keluar dari mode crop */
+  const applyCropNow = async () => {
+    if (cropMode === "none" || !editSource) return;
+    setEditBusy(true);
+    try {
+      const img = await loadImage(editSource);
+      let c = document.createElement("canvas");
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      c.getContext("2d")?.drawImage(img, 0, 0);
+      c = rotateCanvas(c, editRotation);
+
+      if (cropMode === "rect") {
+        c = cropRectCanvas(c, corners[0], corners[2]);
+      } else if (cropMode === "perspective") {
+        c = perspectiveWarp(c, corners);
+      }
+
+      c = downscale(c);
+      const baked = canvasJpeg(c, 0.9);
+
+      setEditSource(baked);
+      setEditRotation(0);
+      setCropMode("none");
+      setCorners(defaultCorners());
+
+      // Preview tanpa crop (sudah di-bake), tetap pakai filter/brightness
+      const preview = await renderPreview(
+        baked,
+        0,
+        editFilter,
+        editBrightness,
+        editContrast,
+        "none",
+        defaultCorners(),
+        false
+      );
+      setEditPreview(preview);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Gagal menerapkan crop"
+      );
+    } finally {
+      setEditBusy(false);
+    }
+  };
+
   if (!open) return null;
 
   const showCropOverlay = cropMode !== "none" && phase === "edit";
@@ -1072,8 +1160,10 @@ export default function CameraCapture({
               <div className="p-3">
                 <p className="mb-1 text-xs text-slate-400">
                   Hasil {editBusy && "(memproses…)"}
-                  {cropMode === "rect" && " · Crop persegi"}
-                  {cropMode === "perspective" && " · Perspective — geser 4 titik"}
+                  {cropMode === "rect" &&
+                    " · Crop — geser 4 titik, lalu tekan Apply Crop"}
+                  {cropMode === "perspective" &&
+                    " · Perspective — geser 4 sudut dokumen, lalu tekan Apply Perspective"}
                 </p>
 
                 <div
@@ -1143,6 +1233,7 @@ export default function CameraCapture({
                   <button
                     type="button"
                     onClick={enableRectCrop}
+                    disabled={editBusy}
                     className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${
                       cropMode === "rect"
                         ? "bg-blue-600 text-white"
@@ -1155,6 +1246,7 @@ export default function CameraCapture({
                   <button
                     type="button"
                     onClick={enablePerspectiveCrop}
+                    disabled={editBusy}
                     className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${
                       cropMode === "perspective"
                         ? "bg-blue-600 text-white"
@@ -1164,13 +1256,36 @@ export default function CameraCapture({
                     <Move size={14} className="mr-1 inline" />
                     Perspective
                   </button>
+                  {cropMode === "rect" && (
+                    <button
+                      type="button"
+                      onClick={() => void applyCropNow()}
+                      disabled={editBusy}
+                      className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+                    >
+                      <Check size={14} className="mr-1 inline" />
+                      Apply Crop
+                    </button>
+                  )}
+                  {cropMode === "perspective" && (
+                    <button
+                      type="button"
+                      onClick={() => void applyCropNow()}
+                      disabled={editBusy}
+                      className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+                    >
+                      <Check size={14} className="mr-1 inline" />
+                      Apply Perspective
+                    </button>
+                  )}
                   {cropMode !== "none" && (
                     <button
                       type="button"
                       onClick={clearCrop}
+                      disabled={editBusy}
                       className="rounded-lg bg-slate-800 px-3 py-1.5 text-xs text-slate-300"
                     >
-                      Reset Crop
+                      Batal
                     </button>
                   )}
                 </div>
