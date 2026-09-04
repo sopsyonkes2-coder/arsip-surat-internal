@@ -24,6 +24,8 @@ import {
   Aperture,
   Move,
   Upload,
+  Undo2,
+  Redo2,
 } from "lucide-react";
 
 type ScanFilter = "color" | "gray" | "bw";
@@ -335,6 +337,7 @@ export default function CameraCapture({
   const startingRef = useRef(false);
   const cropBoxRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const historyIndexRef = useRef(-1);
 
   const [phase, setPhase] = useState<"live" | "edit">("live");
   const [scanPages, setScanPages] = useState<ScanPage[]>([]);
@@ -350,6 +353,21 @@ export default function CameraCapture({
   const [editPreview, setEditPreview] = useState("");
   const [editBusy, setEditBusy] = useState(false);
   const [editingPageId, setEditingPageId] = useState<string | null>(null);
+  /** Ukuran natural gambar edit (setelah rotasi) untuk mapping crop akurat */
+  const [editNaturalSize, setEditNaturalSize] = useState<{
+    w: number;
+    h: number;
+  } | null>(null);
+
+  type EditSnapshot = {
+    sourceDataUrl: string;
+    rotation: 0 | 90 | 180 | 270;
+    filter: ScanFilter;
+    brightness: number;
+    contrast: number;
+  };
+  const [history, setHistory] = useState<EditSnapshot[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
 
   const [cropMode, setCropMode] = useState<CropMode>("none");
   const [corners, setCorners] =
@@ -402,6 +420,10 @@ export default function CameraCapture({
       setEditingPageId(null);
       setCropMode("none");
       setCorners(defaultCorners());
+      setHistory([]);
+      setHistoryIndex(-1);
+      historyIndexRef.current = -1;
+      setEditNaturalSize(null);
     }
   }, [open, stopStream]);
 
@@ -539,6 +561,97 @@ export default function CameraCapture({
     }
   };
 
+  useEffect(() => {
+    historyIndexRef.current = historyIndex;
+  }, [historyIndex]);
+
+  const pushHistory = useCallback(
+    (snap: {
+      sourceDataUrl: string;
+      rotation: 0 | 90 | 180 | 270;
+      filter: ScanFilter;
+      brightness: number;
+      contrast: number;
+    }) => {
+      const idx = historyIndexRef.current;
+      setHistory((prev) => {
+        const base = prev.slice(0, Math.max(0, idx + 1));
+        const next = [...base, snap];
+        const trimmed =
+          next.length > 30 ? next.slice(next.length - 30) : next;
+        historyIndexRef.current = trimmed.length - 1;
+        setHistoryIndex(trimmed.length - 1);
+        return trimmed;
+      });
+    },
+    []
+  );
+
+  const resetHistory = (snap: {
+    sourceDataUrl: string;
+    rotation: 0 | 90 | 180 | 270;
+    filter: ScanFilter;
+    brightness: number;
+    contrast: number;
+  }) => {
+    setHistory([snap]);
+    setHistoryIndex(0);
+    historyIndexRef.current = 0;
+  };
+
+  const undoEdit = () => {
+    if (historyIndex <= 0 || cropMode !== "none") return;
+    const nextIdx = historyIndex - 1;
+    const snap = history[nextIdx];
+    if (!snap) return;
+    setHistoryIndex(nextIdx);
+    historyIndexRef.current = nextIdx;
+    setEditSource(snap.sourceDataUrl);
+    setEditRotation(snap.rotation);
+    setEditFilter(snap.filter);
+    setEditBrightness(snap.brightness);
+    setEditContrast(snap.contrast);
+    setCropMode("none");
+    setCorners(defaultCorners());
+  };
+
+  const redoEdit = () => {
+    if (historyIndex >= history.length - 1 || cropMode !== "none") return;
+    const nextIdx = historyIndex + 1;
+    const snap = history[nextIdx];
+    if (!snap) return;
+    setHistoryIndex(nextIdx);
+    historyIndexRef.current = nextIdx;
+    setEditSource(snap.sourceDataUrl);
+    setEditRotation(snap.rotation);
+    setEditFilter(snap.filter);
+    setEditBrightness(snap.brightness);
+    setEditContrast(snap.contrast);
+    setCropMode("none");
+    setCorners(defaultCorners());
+  };
+
+  // Update ukuran natural (setelah rotasi) untuk mapping crop
+  useEffect(() => {
+    if (!editSource || phase !== "edit") {
+      setEditNaturalSize(null);
+      return;
+    }
+    let cancelled = false;
+    void loadImage(editSource).then((img) => {
+      if (cancelled) return;
+      const rot = editRotation;
+      if (rot === 90 || rot === 270) {
+        setEditNaturalSize({ w: img.naturalHeight, h: img.naturalWidth });
+      } else {
+        setEditNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [editSource, editRotation, phase]);
+
   const doCapture = async () => {
     const v = videoRef.current;
     if (!v?.videoWidth) return;
@@ -557,6 +670,13 @@ export default function CameraCapture({
     setEditingPageId(null);
     setCropMode("none");
     setCorners(defaultCorners());
+    resetHistory({
+      sourceDataUrl,
+      rotation: 0,
+      filter: "color",
+      brightness: 0,
+      contrast: 10,
+    });
     setPhase("edit");
 
     stopStream();
@@ -618,6 +738,13 @@ export default function CameraCapture({
         setEditingPageId(null);
         setCropMode("none");
         setCorners(defaultCorners());
+        resetHistory({
+          sourceDataUrl,
+          rotation: 0,
+          filter: "color",
+          brightness: 0,
+          contrast: 10,
+        });
         setPhase("edit");
         stopStream();
 
@@ -798,6 +925,13 @@ export default function CameraCapture({
     setEditPreview(page.previewDataUrl);
     setCropMode("none");
     setCorners(defaultCorners());
+    resetHistory({
+      sourceDataUrl: page.sourceDataUrl,
+      rotation: page.rotation,
+      filter: page.filter,
+      brightness: page.brightness,
+      contrast: page.contrast,
+    });
     setPhase("edit");
     stopStream();
   };
@@ -823,17 +957,29 @@ export default function CameraCapture({
 
     const A4_WIDTH = 210;
     const A4_HEIGHT = 297;
+    const MARGIN = 8; // mm margin tipis di tepi
 
     for (let i = 0; i < scanPages.length; i++) {
       const page = scanPages[i];
       if (i > 0) pdf.addPage("a4", "portrait");
+
+      // Muat dimensi aktual gambar agar tidak meregang
+      const img = await loadImage(page.previewDataUrl);
+      const maxW = A4_WIDTH - MARGIN * 2;
+      const maxH = A4_HEIGHT - MARGIN * 2;
+      const ratio = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight);
+      const w = img.naturalWidth * ratio;
+      const h = img.naturalHeight * ratio;
+      const x = (A4_WIDTH - w) / 2;
+      const y = (A4_HEIGHT - h) / 2;
+
       pdf.addImage(
         page.previewDataUrl,
         "JPEG",
-        0,
-        0,
-        A4_WIDTH,
-        A4_HEIGHT,
+        x,
+        y,
+        w,
+        h,
         undefined,
         "FAST"
       );
@@ -884,6 +1030,43 @@ export default function CameraCapture({
     onClose();
   };
 
+  /**
+   * Hitung area gambar aktual di dalam container (object-contain).
+   * Mengembalikan offset & scale relatif 0–1 terhadap container.
+   */
+  const getContentRect = useCallback(() => {
+    const box = cropBoxRef.current;
+    if (!box || !editNaturalSize) {
+      return { left: 0, top: 0, width: 1, height: 1 };
+    }
+    const bw = box.clientWidth;
+    const bh = box.clientHeight;
+    if (bw <= 0 || bh <= 0) return { left: 0, top: 0, width: 1, height: 1 };
+
+    const imgAspect = editNaturalSize.w / editNaturalSize.h;
+    const boxAspect = bw / bh;
+
+    let contentW: number;
+    let contentH: number;
+    if (imgAspect > boxAspect) {
+      // gambar lebih lebar → letterbox atas-bawah
+      contentW = bw;
+      contentH = bw / imgAspect;
+    } else {
+      // gambar lebih tinggi → letterbox kiri-kanan
+      contentH = bh;
+      contentW = bh * imgAspect;
+    }
+    const left = (bw - contentW) / 2 / bw;
+    const top = (bh - contentH) / 2 / bh;
+    return {
+      left,
+      top,
+      width: contentW / bw,
+      height: contentH / bh,
+    };
+  }, [editNaturalSize]);
+
   /* ---- Drag crop handles ---- */
   const onHandlePointerDown = (index: number, e: ReactPointerEvent) => {
     e.preventDefault();
@@ -897,10 +1080,16 @@ export default function CameraCapture({
     const rect = cropBoxRef.current.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
 
-    let x = (e.clientX - rect.left) / rect.width;
-    let y = (e.clientY - rect.top) / rect.height;
-    x = Math.max(0.02, Math.min(0.98, x));
-    y = Math.max(0.02, Math.min(0.98, y));
+    // Posisi pointer relatif ke container (0–1)
+    const px = (e.clientX - rect.left) / rect.width;
+    const py = (e.clientY - rect.top) / rect.height;
+
+    // Map ke koordinat gambar aktual (object-contain)
+    const cr = getContentRect();
+    let x = (px - cr.left) / (cr.width || 1);
+    let y = (py - cr.top) / (cr.height || 1);
+    x = Math.max(0.01, Math.min(0.99, x));
+    y = Math.max(0.01, Math.min(0.99, y));
 
     setCorners((prev) => {
       const next = [...prev] as [Point, Point, Point, Point];
@@ -972,6 +1161,13 @@ export default function CameraCapture({
       setEditRotation(0);
       setCropMode("none");
       setCorners(defaultCorners());
+      pushHistory({
+        sourceDataUrl: baked,
+        rotation: 0,
+        filter: editFilter,
+        brightness: editBrightness,
+        contrast: editContrast,
+      });
 
       // Preview tanpa crop (sudah di-bake), tetap pakai filter/brightness
       const preview = await renderPreview(
@@ -1188,42 +1384,55 @@ export default function CameraCapture({
                     </div>
                   )}
 
-                  {/* Overlay crop — pakai gambar sumber mentah via CSS, handles di atas */}
-                  {showCropOverlay && (
-                    <>
-                      {/* garis penghubung */}
-                      <svg
-                        className="pointer-events-none absolute inset-0 h-full w-full"
-                        viewBox="0 0 100 100"
-                        preserveAspectRatio="none"
-                      >
-                        <polygon
-                          points={corners
-                            .map((c) => `${c.x * 100},${c.y * 100}`)
-                            .join(" ")}
-                          fill="rgba(59,130,246,0.15)"
-                          stroke="#3b82f6"
-                          strokeWidth="0.8"
-                        />
-                      </svg>
+                  {/* Overlay crop — koordinat relatif ke area gambar (object-contain) */}
+                  {showCropOverlay &&
+                    (() => {
+                      const cr = getContentRect();
+                      const toBox = (c: Point) => ({
+                        x: (cr.left + c.x * cr.width) * 100,
+                        y: (cr.top + c.y * cr.height) * 100,
+                      });
+                      return (
+                        <>
+                          <svg
+                            className="pointer-events-none absolute inset-0 h-full w-full"
+                            viewBox="0 0 100 100"
+                            preserveAspectRatio="none"
+                          >
+                            <polygon
+                              points={corners
+                                .map((c) => {
+                                  const p = toBox(c);
+                                  return `${p.x},${p.y}`;
+                                })
+                                .join(" ")}
+                              fill="rgba(59,130,246,0.18)"
+                              stroke="#3b82f6"
+                              strokeWidth="0.7"
+                            />
+                          </svg>
 
-                      {corners.map((c, i) => (
-                        <button
-                          key={i}
-                          type="button"
-                          onPointerDown={(e) => onHandlePointerDown(i, e)}
-                          className="absolute z-10 flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-white bg-blue-600 shadow-lg"
-                          style={{
-                            left: `${c.x * 100}%`,
-                            top: `${c.y * 100}%`,
-                          }}
-                          aria-label={`Titik ${i + 1}`}
-                        >
-                          <Move size={12} className="text-white" />
-                        </button>
-                      ))}
-                    </>
-                  )}
+                          {corners.map((c, i) => {
+                            const p = toBox(c);
+                            return (
+                              <button
+                                key={i}
+                                type="button"
+                                onPointerDown={(e) => onHandlePointerDown(i, e)}
+                                className="absolute z-10 flex h-8 w-8 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-white bg-blue-600 shadow-lg"
+                                style={{
+                                  left: `${p.x}%`,
+                                  top: `${p.y}%`,
+                                }}
+                                aria-label={`Titik ${i + 1}`}
+                              >
+                                <Move size={12} className="text-white" />
+                              </button>
+                            );
+                          })}
+                        </>
+                      );
+                    })()}
                 </div>
               </div>
 
@@ -1307,14 +1516,42 @@ export default function CameraCapture({
                   ))}
                   <button
                     type="button"
-                    onClick={() =>
-                      setEditRotation(
-                        (r) => ((r + 90) % 360) as 0 | 90 | 180 | 270
-                      )
-                    }
+                    onClick={() => {
+                      setEditRotation((r) => {
+                        const next = ((r + 90) % 360) as 0 | 90 | 180 | 270;
+                        pushHistory({
+                          sourceDataUrl: editSource,
+                          rotation: next,
+                          filter: editFilter,
+                          brightness: editBrightness,
+                          contrast: editContrast,
+                        });
+                        return next;
+                      });
+                    }}
                     className="rounded-lg bg-slate-800 px-3 py-1.5 text-xs text-slate-200"
                   >
                     <RotateCw size={14} className="mr-1 inline" /> Rotate
+                  </button>
+                  <button
+                    type="button"
+                    onClick={undoEdit}
+                    disabled={historyIndex <= 0 || cropMode !== "none"}
+                    className="rounded-lg bg-slate-800 px-3 py-1.5 text-xs text-slate-200 disabled:opacity-40"
+                    title="Undo"
+                  >
+                    <Undo2 size={14} className="mr-1 inline" /> Undo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={redoEdit}
+                    disabled={
+                      historyIndex >= history.length - 1 || cropMode !== "none"
+                    }
+                    className="rounded-lg bg-slate-800 px-3 py-1.5 text-xs text-slate-200 disabled:opacity-40"
+                    title="Redo"
+                  >
+                    <Redo2 size={14} className="mr-1 inline" /> Redo
                   </button>
                 </div>
                 <label className="flex items-center gap-2 text-xs text-slate-400">
