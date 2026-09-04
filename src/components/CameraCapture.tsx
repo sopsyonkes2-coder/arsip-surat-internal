@@ -23,6 +23,7 @@ import {
   X,
   Aperture,
   Move,
+  Upload,
 } from "lucide-react";
 
 type ScanFilter = "color" | "gray" | "bw";
@@ -325,6 +326,7 @@ export default function CameraCapture({
   const trackRef = useRef<MediaStreamTrack | null>(null);
   const startingRef = useRef(false);
   const cropBoxRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [phase, setPhase] = useState<"live" | "edit">("live");
   const [scanPages, setScanPages] = useState<ScanPage[]>([]);
@@ -563,6 +565,111 @@ export default function CameraCapture({
         defaultCorners()
       );
       setEditPreview(preview);
+    } finally {
+      setEditBusy(false);
+    }
+  };
+
+  /** Import gambar dari perangkat → langsung masuk ke mode edit (satu per satu) atau batch */
+  const handleImportFiles = async (
+    e: { target: HTMLInputElement }
+  ) => {
+    const files = Array.from(e.target.files || []).filter((f) =>
+      f.type.startsWith("image/")
+    );
+    e.target.value = "";
+    if (!files.length) return;
+
+    setError("");
+    setEditBusy(true);
+
+    try {
+      // Jika hanya 1 gambar → buka mode edit seperti hasil foto
+      if (files.length === 1) {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(new Error("Gagal membaca file"));
+          reader.readAsDataURL(files[0]);
+        });
+
+        // Downscale agar konsisten dengan capture
+        const img = await loadImage(dataUrl);
+        let c = document.createElement("canvas");
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
+        c.getContext("2d")?.drawImage(img, 0, 0);
+        c = downscale(c);
+        const sourceDataUrl = canvasJpeg(c, 0.85);
+
+        setEditSource(sourceDataUrl);
+        setEditRotation(0);
+        setEditFilter("color");
+        setEditBrightness(0);
+        setEditContrast(10);
+        setEditingPageId(null);
+        setCropMode("none");
+        setCorners(defaultCorners());
+        setPhase("edit");
+        stopStream();
+
+        const preview = await renderPreview(
+          sourceDataUrl,
+          0,
+          "color",
+          0,
+          10,
+          "none",
+          defaultCorners()
+        );
+        setEditPreview(preview);
+        return;
+      }
+
+      // Banyak gambar → tambahkan semua sebagai halaman dengan default
+      const newPages: ScanPage[] = [];
+      for (const file of files) {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(new Error("Gagal membaca file"));
+          reader.readAsDataURL(file);
+        });
+
+        const img = await loadImage(dataUrl);
+        let c = document.createElement("canvas");
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
+        c.getContext("2d")?.drawImage(img, 0, 0);
+        c = downscale(c);
+        const sourceDataUrl = canvasJpeg(c, 0.85);
+
+        const previewDataUrl = await renderPreview(
+          sourceDataUrl,
+          0,
+          "color",
+          0,
+          10,
+          "none",
+          defaultCorners()
+        );
+
+        newPages.push({
+          id: `p-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          sourceDataUrl,
+          rotation: 0,
+          filter: "color",
+          brightness: 0,
+          contrast: 10,
+          previewDataUrl,
+        });
+      }
+
+      setScanPages((prev) => [...prev, ...newPages]);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Gagal mengimpor gambar"
+      );
     } finally {
       setEditBusy(false);
     }
@@ -845,6 +952,22 @@ export default function CameraCapture({
                     Membuka kamera…
                   </div>
                 )}
+                {error && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/80 px-4 text-center">
+                    <p className="text-sm text-red-200">{error}</p>
+                    <p className="text-xs text-slate-400">
+                      Anda tetap bisa mengimpor gambar dari perangkat.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="rounded-xl bg-slate-700 px-4 py-2 text-sm font-semibold text-white"
+                    >
+                      <Upload size={16} className="mr-1 inline" /> Import
+                      Gambar
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div className="flex flex-wrap items-center justify-center gap-2 border-t border-slate-800 bg-slate-900 px-3 py-2">
@@ -903,6 +1026,22 @@ export default function CameraCapture({
                 >
                   <Camera size={16} className="mr-1 inline" /> Ambil Halaman
                 </button>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={editBusy}
+                  className="rounded-xl bg-slate-700 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-40"
+                >
+                  <Upload size={16} className="mr-1 inline" /> Import Gambar
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => void handleImportFiles(e)}
+                />
                 <button
                   type="button"
                   onClick={() => void makeScanPdf()}
